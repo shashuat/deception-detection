@@ -1,5 +1,11 @@
-/Audio-Visual-Deception-Detection-DOLOS-Dataset-and-Parameter-Efficient-Crossmodal-Learning/
+.vscode
 
-/code/data_preprocess/data
+Audio-Visual-Deception-Detection-DOLOS-Dataset-and-Parameter-Efficient-Crossmodal-Learning/
 
-/av_data_process/
+code/data_preprocess/data
+
+av_data_process/
+
+DOLOS.zip
+
+DOLOS
