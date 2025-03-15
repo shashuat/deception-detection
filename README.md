@@ -105,8 +105,15 @@ The implementation supports two types of adapters:
 
 Trained models and logs will be saved in the `logs` directory
 
-## Some terminal outputs (just for reference)
+## Current Warnings
+... and 136 more issues
+  warnings.warn(f"  - ... and {len(problem_files) - 5} more issues")
+Dataset validated: 407 valid samples out of 548 total.
+Training samples: 857, Test samples: 407
+Model created: DOLOS_fusion_Encoders_4_Adapter_True_type_efficient_conv_fusion_cross2
+Starting training for 20 epochs
 
+## Some terminal outputs (just for reference)
 
 Epoch 3/20
 Batch 0, Loss: 0.69411
