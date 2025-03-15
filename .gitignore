@@ -10,4 +10,8 @@ DOLOS.zip
 
 DOLOS
 
+__pycache__
+
+logs
+
 data
