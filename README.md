@@ -46,7 +46,16 @@ Finally, you should have such a data directory structure
 ├── train_fold2.csv
 └── ...
 ```
-
+## Code directory
+```
+/Deception-Detection/code
+├── archive/          # unused random codes
+├── data_preprocess/  # downloading data, frame
+├── dataloader/       # contains the torch dataset class
+├── models/           # torch model
+├── train_test.py     # current training script
+├──
+```
 ## Running the model
 1. Configure the model in `train_test.py` by modifying the `config` dictionary:
 
@@ -95,3 +104,48 @@ The implementation supports two types of adapters:
 ## Results
 
 Trained models and logs will be saved in the `logs` directory
+
+## Some terminal outputs (just for reference)
+
+
+Epoch 3/20
+Batch 0, Loss: 0.69411
+Batch 10, Loss: 0.71668
+Batch 20, Loss: 0.66646
+Batch 30, Loss: 0.70222
+Batch 40, Loss: 0.69655
+Batch 50, Loss: 0.68353
+Training completed in 86.14 seconds
+Epoch 3 Results:
+  Train - Loss: 0.68658, Acc: 0.55309, F1: 0.66550, AUC: 0.52947
+  Valid - Loss: 0.67329, Acc: 0.59214, F1: 0.67063, AUC: 0.57660
+New best model saved to logs/best_model_train_fold3_test_fold3.pt
+
+Epoch 4/20
+Batch 0, Loss: 0.67514
+Batch 10, Loss: 0.66677
+Batch 20, Loss: 0.63368
+Batch 30, Loss: 0.75176
+Batch 40, Loss: 0.61897
+Batch 50, Loss: 0.63325
+Training completed in 87.09 seconds
+Epoch 4 Results:
+  Train - Loss: 0.68696, Acc: 0.57060, F1: 0.63780, AUC: 0.55928
+  Valid - Loss: 0.67313, Acc: 0.56265, F1: 0.66160, AUC: 0.54251
+
+Epoch 5/20
+Batch 0, Loss: 0.70214
+Batch 10, Loss: 0.76371
+
+the initial epoch precision recall values might be NaN, hence a warning is to be expected
+
+## Training FLOPS
+gpu usage: python - 22990MiB !!! 22GB damn
+
+## TODO
+shashwat:
+will implement wandb for train run loggin
++ advancement in architecture backbones
+
+enzo:
+will implement different multimodal approach?
