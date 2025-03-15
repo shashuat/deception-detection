@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import time
+import json
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -10,14 +11,17 @@ from models.fusion_model import Fusion
 from models.visual_model import ViT_model
 from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_curve, auc
 
+# --------------------------
+# RUN FROM / (project root)
+# --------------------------
 
 # Configuration dictionary
 config = {
     # Paths
-    "data_root": "/Data/dec/DOLOS/",
-    "audio_path": "/Data/dec/data/audio_files/",
-    "visual_path": "/Data/dec/data/face_frames/",
-    "log_dir": "logs",
+    "data_root": os.path.join("DOLOS"),
+    "audio_path": os.path.join("/", "Data", "lie-detection", "data", "audio_files"),
+    "visual_path": os.path.join("/", "Data", "lie-detection", "data", "face_frames"),
+    "log_dir": os.path.join("logs"),
     
     # Training parameters
     "device": torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
@@ -45,7 +49,6 @@ config = {
         # ["female.csv", "male.csv"],
     ]
 }
-
 
 def train_one_epoch(config, train_loader, model, optimizer, criterion, loss_audio=None, loss_vision=None):
     """Train model for one epoch"""
@@ -224,162 +227,205 @@ def train_and_evaluate():
         model_name += "_multi"
         
     # Create log file
-    log_file = os.path.join(config["log_dir"], f"{int(time.time())}_{model_name}.txt")
+    log_file = os.path.join(config["log_dir"], f"{int(time.time())}_{model_name}.json")
+    log_json = {
+        "model": model_name,
+        "learning_rate": config["lr"],
+        "batch_size": config["batch_size"],
+        "num_pochs": config["num_epochs"],
+        "num_encoders": config["num_encoders"],
+        "adapter": config["adapter"],
+        "runs": {}
+    }
+
+    if config["adapter"]:
+        log_json["adapter_type"] = config["adapter_type"]
     
     # Log configuration
-    with open(log_file, 'w') as f:
-        f.write(f"Model: {model_name}\n")
-        f.write(f"Learning Rate: {config['lr']}\n")
-        f.write(f"Batch Size: {config['batch_size']}\n")
-        f.write(f"Epochs: {config['num_epochs']}\n")
-        f.write(f"Num Encoders: {config['num_encoders']}\n")
-        f.write(f"Adapter: {config['adapter']}\n")
-        if config["adapter"]:
-            f.write(f"Adapter Type: {config['adapter_type']}\n")
-        f.write("----------------------------------------\n\n")
+    with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
+    #     f.write(f"Model: {model_name}\n")
+    #     f.write(f"Learning Rate: {config['lr']}\n")
+    #     f.write(f"Batch Size: {config['batch_size']}\n")
+    #     f.write(f"Epochs: {config['num_epochs']}\n")
+    #     f.write(f"Num Encoders: {config['num_encoders']}\n")
+    #     f.write(f"Adapter: {config['adapter']}\n")
+    #     if config["adapter"]:
+    #         f.write(f"Adapter Type: {config['adapter_type']}\n")
+    #     f.write("----------------------------------------\n\n")
+
     
     # Train and evaluate on each protocol
-    for protocol in config["protocols"]:
-        train_file, test_file = protocol
-        
-        print(f"\n\nRunning protocol: {train_file} (train), {test_file} (test)")
-        
-        # Update log file
-        with open(log_file, 'a') as f:
-            f.write(f"\nProtocol: {train_file} (train), {test_file} (test)\n")
-        
-        # Get annotation file paths
-        train_anno = os.path.join(config["data_root"], "protocols", train_file)
-        test_anno = os.path.join(config["data_root"], "protocols", test_file)
-        
-        # Create datasets
-        # train_dataset = AudioVisualDataset(train_anno, config["audio_path"], config["visual_path"])
-        # test_dataset = AudioVisualDataset(test_anno, config["audio_path"], config["visual_path"])
-        
-        train_dataset = AudioVisualDataset(
-        train_anno, 
-        config["audio_path"], 
-        config["visual_path"], 
-        ignore_audio_errors=True  # Set to True to continue even with audio errors
-        )
+    try:
+        for protocol in config["protocols"]:
+            train_file, test_file = protocol
+            protocol_key = f"protocol: [train] {train_file} | [test] {test_file}"
+            
+            print(f"\n\nRunning protocol: {train_file} (train), {test_file} (test)")
+            if protocol_key in log_json["runs"]:
+                raise Exception("You can run a protocol only one time.\nProtocol <" + protocol_key + "> was already run")
+            
+            log_json["runs"][protocol_key] = {
+                "steps": [],
+                "train_file": train_file, # repetion but easier to access (no split etc.)
+                "test_file": test_file
+            }
+            with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
+            
+            # Get annotation file paths
+            train_anno = os.path.join(config["data_root"], "protocols", train_file)
+            test_anno = os.path.join(config["data_root"], "protocols", test_file)
+            
+            train_dataset = AudioVisualDataset(
+                train_anno, 
+                config["audio_path"], 
+                config["visual_path"], 
+                ignore_audio_errors=True  # Set to True to continue even with audio errors
+            )
 
-        test_dataset = AudioVisualDataset(
-            test_anno, 
-            config["audio_path"], 
-            config["visual_path"], 
-            ignore_audio_errors=True  # Set to True to continue even with audio errors
-        )
-        # Create data loaders
-        train_loader = DataLoader(
-            train_dataset, 
-            batch_size=config["batch_size"], 
-            shuffle=True,
-            collate_fn=af_collate_fn,
-            num_workers=4
-        )
-        
-        test_loader = DataLoader(
-            test_dataset, 
-            batch_size=config["batch_size"], 
-            shuffle=False,
-            collate_fn=af_collate_fn,
-            num_workers=4
-        )
-        
-        print(f"Training samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
-        
-        # Create model
-        if config["model_to_train"] == "audio":
-            model = W2V2_Model(config["num_encoders"], config["adapter"], config["adapter_type"])
-        elif config["model_to_train"] == "vision":
-            model = ViT_model(config["num_encoders"], config["adapter"], config["adapter_type"])
-        else:
-            model = Fusion(
-                config["fusion_type"], 
-                config["num_encoders"], 
-                config["adapter"], 
-                config["adapter_type"], 
-                config["multi"]
+            test_dataset = AudioVisualDataset(
+                test_anno, 
+                config["audio_path"], 
+                config["visual_path"], 
+                ignore_audio_errors=True  # Set to True to continue even with audio errors
             )
-        
-        # Move model to device
-        model.to(config["device"])
-        print(f"Model created: {model_name}")
-        
-        # Create optimizer and loss function
-        optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
-        criterion = nn.CrossEntropyLoss()
-        
-        # Additional loss functions for multitask learning
-        loss_audio = loss_vision = None
-        if config["multi"]:
-            loss_audio = nn.CrossEntropyLoss()
-            loss_vision = nn.CrossEntropyLoss()
-            print("Multitask learning enabled")
-        
-        # Training loop
-        best_acc = 0.0
-        print(f"Starting training for {config['num_epochs']} epochs")
-        
-        for epoch in range(config["num_epochs"]):
-            print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
-            
-            # Train for one epoch
-            train_loss, train_preds, train_labels = train_one_epoch(
-                config, train_loader, model, optimizer, criterion, loss_audio, loss_vision
+
+            # Create data loaders
+            train_loader = DataLoader(
+                train_dataset, 
+                batch_size=config["batch_size"], 
+                shuffle=True,
+                collate_fn=af_collate_fn,
+                num_workers=4
             )
             
-            # Calculate training metrics
-            train_acc, train_f1, train_auc = evaluate_metrics(
-                train_labels.cpu().numpy(), train_preds.cpu().numpy()
+            test_loader = DataLoader(
+                test_dataset, 
+                batch_size=config["batch_size"], 
+                shuffle=False,
+                collate_fn=af_collate_fn,
+                num_workers=4
             )
             
-            # Validate
-            val_loss, val_preds, val_labels = validate(
-                config, test_loader, model, criterion, loss_audio, loss_vision
-            )
+            print(f"Training samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
             
-            # Calculate validation metrics
-            val_acc, val_f1, val_auc = evaluate_metrics(
-                val_labels.cpu().numpy(), val_preds.cpu().numpy()
-            )
+            # Create model
+            if config["model_to_train"] == "audio":
+                model = W2V2_Model(config["num_encoders"], config["adapter"], config["adapter_type"])
+            elif config["model_to_train"] == "vision":
+                model = ViT_model(config["num_encoders"], config["adapter"], config["adapter_type"])
+            else:
+                model = Fusion(
+                    config["fusion_type"], 
+                    config["num_encoders"], 
+                    config["adapter"], 
+                    config["adapter_type"], 
+                    config["multi"]
+                )
             
-            # Print results
-            print(f"Epoch {epoch+1} Results:")
-            print(f"  Train - Loss: {train_loss:.5f}, Acc: {train_acc:.5f}, F1: {train_f1:.5f}, AUC: {train_auc:.5f}")
-            print(f"  Valid - Loss: {val_loss:.5f}, Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}")
+            # Move model to device
+            model.to(config["device"])
+            print(f"Model created: {model_name}")
             
-            # Update log file
-            with open(log_file, 'a') as f:
-                f.write(f"Epoch {epoch+1}, Train Loss: {train_loss:.5f}, Train Acc: {train_acc:.5f}, ")
-                f.write(f"Valid Loss: {val_loss:.5f}, Valid Acc: {val_acc:.5f}, Valid F1: {val_f1:.5f}, Valid AUC: {val_auc:.5f}\n")
+            # Create optimizer and loss function
+            optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
+            criterion = nn.CrossEntropyLoss()
             
-            # Save best model
-            if val_acc > best_acc:
-                best_acc = val_acc
-                best_results = f"Best Results (Epoch {epoch+1}) - Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}"
+            # Additional loss functions for multitask learning
+            loss_audio = loss_vision = None
+            if config["multi"]:
+                loss_audio = nn.CrossEntropyLoss()
+                loss_vision = nn.CrossEntropyLoss()
+                print("Multitask learning enabled")
+            
+            # Training loop
+            best_acc = 0.0
+            print(f"Starting training for {config['num_epochs']} epochs")
+            
+            for epoch in range(config["num_epochs"]):
+                print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
                 
-                # Generate classification report
-                report = classification_report(
-                    val_labels.cpu().numpy(), 
-                    val_preds.cpu().numpy(),
-                    target_names=["truth", "deception"]
+                # Train for one epoch
+                train_loss, train_preds, train_labels = train_one_epoch(
+                    config, train_loader, model, optimizer, criterion, loss_audio, loss_vision
                 )
                 
-                # Save model
-                model_path = os.path.join(config["log_dir"], f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
-                torch.save(model.state_dict(), model_path)
-                print(f"New best model saved to {model_path}")
-        
-        # Log final results
-        print("\nTraining completed.")
-        print(best_results)
-        
-        with open(log_file, 'a') as f:
-            f.write("\n" + "="*50 + "\n")
-            f.write(best_results + "\n\n")
-            f.write("Classification Report:\n")
-            f.write(report + "\n\n")
+                # Calculate training metrics
+                train_acc, train_f1, train_auc = evaluate_metrics(
+                    train_labels.cpu().numpy(), train_preds.cpu().numpy()
+                )
+                
+                # Validate
+                val_loss, val_preds, val_labels = validate(
+                    config, test_loader, model, criterion, loss_audio, loss_vision
+                )
+                
+                # Calculate validation metrics
+                val_acc, val_f1, val_auc = evaluate_metrics(
+                    val_labels.cpu().numpy(), val_preds.cpu().numpy()
+                )
+                
+                # Print results
+                print(f"Epoch {epoch+1} Results:")
+                print(f"  Train - Loss: {train_loss:.5f}, Acc: {train_acc:.5f}, F1: {train_f1:.5f}, AUC: {train_auc:.5f}")
+                print(f"  Valid - Loss: {val_loss:.5f}, Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}")
+                
+                # Update log file
+                log_json["runs"][protocol_key]["steps"].append({
+                    "epoch": epoch+1,
+                    "train_loss": train_loss,
+                    "train_acc": train_acc,
+                    "validation_loss": val_loss,
+                    "validation_acc": val_acc,
+                    "validation_F1": val_f1,
+                    "validation_AUC": val_auc
+                })
+                with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
+
+                # with open(log_file, 'a') as f:
+                #     f.write(f"Epoch {epoch+1}, Train Loss: {train_loss:.5f}, Train Acc: {train_acc:.5f}, ")
+                #     f.write(f"Valid Loss: {val_loss:.5f}, Valid Acc: {val_acc:.5f}, Valid F1: {val_f1:.5f}, Valid AUC: {val_auc:.5f}\n")
+                
+                # Save best model
+                if val_acc > best_acc:
+                    best_acc = val_acc
+                    best_results = f"Best Results (Epoch {epoch+1}) - Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}"
+                    best_results_epoch = epoch+1
+                    
+                    # Generate classification report
+                    report = classification_report(
+                        val_labels.cpu().numpy(), 
+                        val_preds.cpu().numpy(),
+                        target_names=["truth", "deception"]
+                    )
+                    
+                    # Save model
+                    model_path = os.path.join(config["log_dir"], f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
+                    torch.save(model.state_dict(), model_path)
+                    print(f"New best model saved to {model_path}")
+            
+            # Log final results
+            print("\nTraining completed.")
+            print(best_results)
+
+            log_json["runs"][protocol_key]["best_results_epoch"] = best_results_epoch
+            log_json["runs"][protocol_key]["report"] = report
+
+            with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
+
+            # with open(log_file, 'a') as f:
+            #     f.write("\n" + "="*50 + "\n")
+            #     f.write(best_results + "\n\n")
+            #     f.write("Classification Report:\n")
+            #     f.write(report + "\n\n")
+
+    except Exception as e: # before raise exception, save it in the log.json
+        log_json["error"] = e.__str__
+        import traceback
+        traceback.print_exc()
+        tb = traceback.extract_tb()
+        log_json["traceback"] = str(tb)
+        with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
+        raise e
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 Download and unzip `DOLOS.zip`
 
+Download and unzip `data.zip`to avoid to recompute all data processing (~7GB of data)
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -28,7 +30,7 @@ I'm not sure if video chopper.py is required because it takes as input long form
 Finally, you should have such a data directory structure
 
 ```
-/Data/dec/data/
+/data/
 ├── audio_files/          # .wav audio files 
 ├── face_frames/          # Extracted face frames as JPG files
 │   ├── clip_name1/
@@ -40,7 +42,7 @@ Finally, you should have such a data directory structure
     ├── clip_name1/
     └── ...
 
-/Data/dec/DOLOS/protocols/
+/DOLOS/protocols/
 ├── train_fold1.csv
 ├── test_fold1.csv
 ├── train_fold2.csv
@@ -48,35 +50,17 @@ Finally, you should have such a data directory structure
 ```
 ## Code directory
 ```
-/Deception-Detection/code
+/code
 ├── archive/          # unused random codes
 ├── data_preprocess/  # downloading data, frame
 ├── dataloader/       # contains the torch dataset class
 ├── models/           # torch model
 ├── train_test.py     # current training script
-├──
+├── ...
 ```
-## Running the model
-1. Configure the model in `train_test.py` by modifying the `config` dictionary:
 
-```python
-config = {
-    # Paths
-    "data_root": "/path/to/DOLOS/",
-    "audio_path": "/path/to/audio_files/",
-    "visual_path": "/path/to/face_frames/",
-    
-    # Model configuration
-    "model_to_train": "fusion",  # Options: "audio", "vision", "fusion"
-    "num_encoders": 4,
-    "adapter": True,
-    "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
-    "fusion_type": "cross2",  # Options: "concat", "cross2"
-    
-    # Training parameters
-    ...
-}
-```
+## Running the model
+1. Configure the model in `train_test.py` by modifying the `config` dictionary if needed
 
 ```bash
 python -m train_test
@@ -144,10 +128,21 @@ Epoch 5/20
 Batch 0, Loss: 0.70214
 Batch 10, Loss: 0.76371
 
+...
+
+Training completed in 83.71 seconds
+Epoch 20 Results:
+  Train - Loss: 0.63875, Acc: 0.63827, F1: 0.64932, AUC: 0.63988
+  Valid - Loss: 0.67102, Acc: 0.60688, F1: 0.70696, AUC: 0.58302
+
+Training completed.
+Best Results (Epoch 16) - Acc: 0.61671, F1: 0.64545, AUC: 0.61417
+
 the initial epoch precision recall values might be NaN, hence a warning is to be expected
 
 ## Training FLOPS
-gpu usage: python - 22990MiB !!! 22GB damn
+gpu usage: python - 22990MiB !!! 22GB damn <--- not surprising i think => batches == parallelization (use moge GPU, reduce batch size if out of CUDA memory) /!\ Initial model already do parallelization so can be expensive (but faster)
+
 
 ## TODO
 shashwat:
@@ -155,4 +150,9 @@ will implement wandb for train run loggin
 + advancement in architecture backbones
 
 enzo:
-will implement different multimodal approach?
+will implement different multimodal approach
+- Start by creating wav to text
+- make the code architecture more dynamic / light (will try)
+- Create a way to add our own sample from video handmade (web interface to do it ?) --> check how to link web from polytechnics computers to our
+
+both: posters !!!
