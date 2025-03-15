@@ -1,27 +1,29 @@
 import os
-import numpy as np
+import sys
 import time
 import json
+import traceback
 import torch
+import numpy as np
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_curve, auc
+
 from dataloader.audio_visual_dataset import AudioVisualDataset, af_collate_fn
 from models.audio_model import W2V2_Model
 from models.fusion_model import Fusion
 from models.visual_model import ViT_model
-from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_curve, auc
 
-# --------------------------
-# RUN FROM / (project root)
-# --------------------------
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from setup import get_env
 
-# Configuration dictionary
+ENV = get_env()
 config = {
     # Paths
-    "data_root": os.path.join("DOLOS"),
-    "audio_path": os.path.join("/", "Data", "lie-detection", "data", "audio_files"),
-    "visual_path": os.path.join("/", "Data", "lie-detection", "data", "face_frames"),
-    "log_dir": os.path.join("logs"),
+    "data_root": ENV["DOLOS_PATH"],
+    "audio_path": ENV["AUDIO_PATH"],
+    "visual_path": ENV["VISUAL_PATH"],
+    "log_dir": ENV["LOGS_PATH"],
     
     # Training parameters
     "device": torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
@@ -419,10 +421,8 @@ def train_and_evaluate():
             #     f.write(report + "\n\n")
 
     except Exception as e: # before raise exception, save it in the log.json
-        log_json["error"] = e.__str__
-        import traceback
-        traceback.print_exc()
-        tb = traceback.extract_tb()
+        log_json["error"] = e.__str__()
+        tb = traceback.format_exc()
         log_json["traceback"] = str(tb)
         with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
         raise e
