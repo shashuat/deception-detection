@@ -1,1 +1,1 @@
-from .audio_visual_dataset import AudioVisualDataset, af_collate_fn
+from .audio_visual_dataset import DatasetDOLOS, af_collate_fn

@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_curve, auc
 
-from dataloader.audio_visual_dataset import AudioVisualDataset, af_collate_fn
+from dataloader.audio_visual_dataset import DatasetDOLOS, af_collate_fn
 from models.audio_model import W2V2_Model
 from models.fusion_model import Fusion
 from models.visual_model import ViT_model
@@ -23,12 +23,13 @@ config = {
     "data_root": ENV["DOLOS_PATH"],
     "audio_path": ENV["AUDIO_PATH"],
     "visual_path": ENV["VISUAL_PATH"],
+    "transcripts_path": ENV["TRANSCRIPTS_PATH"],
     "log_dir": ENV["LOGS_PATH"],
     
     # Training parameters
     "device": torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
     "lr": 1e-3,
-    "batch_size": 16,
+    "batch_size": 8,
     "num_epochs": 20,
     
     # Model configuration
@@ -61,7 +62,7 @@ def train_one_epoch(config, train_loader, model, optimizer, criterion, loss_audi
     start_time = time.time()
     
     if config["model_to_train"] == "audio":
-        for i, (waves, _, labels) in enumerate(train_loader):
+        for i, (waves, _, _, labels) in enumerate(train_loader):
             # Prepare input
             waves = waves.squeeze(1).to(config["device"])
             labels = labels.to(config["device"])
@@ -84,7 +85,7 @@ def train_one_epoch(config, train_loader, model, optimizer, criterion, loss_audi
                 print(f"Batch {i}, Loss: {loss.item():.5f}")
                 
     elif config["model_to_train"] == "vision":
-        for i, (_, faces, labels) in enumerate(train_loader):
+        for i, (_, faces, _, labels) in enumerate(train_loader):
             # Prepare input
             faces = faces.to(config["device"])
             labels = labels.to(config["device"])
@@ -105,17 +106,21 @@ def train_one_epoch(config, train_loader, model, optimizer, criterion, loss_audi
             
             if i % 10 == 0:
                 print(f"Batch {i}, Loss: {loss.item():.5f}")
+    
+    elif config["model_to_train"] == "text": ...
                 
     else:  # Fusion model
-        for i, (waves, faces, labels) in enumerate(train_loader):
+        for i, (waves, faces, (whisper_tokens, bert_embedding), labels) in enumerate(train_loader):
             # Prepare input
             waves = waves.squeeze(1).to(config["device"])
             faces = faces.to(config["device"])
+            whisper_tokens = whisper_tokens.to(config["device"])
+            bert_embedding = bert_embedding.to(config["device"])
             labels = labels.to(config["device"])
             
             # Forward pass
             optimizer.zero_grad()
-            outputs, a_outputs, v_outputs = model(waves, faces)
+            outputs, a_outputs, v_outputs = model(waves, faces, whisper_tokens, bert_embedding)
             
             # Calculate loss
             loss = criterion(outputs, labels)
@@ -156,7 +161,7 @@ def validate(config, val_loader, model, criterion, loss_audio=None, loss_vision=
     
     with torch.no_grad():
         if config["model_to_train"] == "audio":
-            for waves, _, labels in val_loader:
+            for waves, _, _, labels in val_loader:
                 waves = waves.squeeze(1).to(config["device"])
                 labels = labels.to(config["device"])
                 
@@ -168,7 +173,7 @@ def validate(config, val_loader, model, criterion, loss_audio=None, loss_vision=
                 epoch_labels.append(labels)
                 
         elif config["model_to_train"] == "vision":
-            for _, faces, labels in val_loader:
+            for _, faces, _, labels in val_loader:
                 faces = faces.to(config["device"])
                 labels = labels.to(config["device"])
                 
@@ -180,12 +185,12 @@ def validate(config, val_loader, model, criterion, loss_audio=None, loss_vision=
                 epoch_labels.append(labels)
                 
         else:  # Fusion model
-            for waves, faces, labels in val_loader:
+            for waves, faces, text, labels in val_loader:
                 waves = waves.squeeze(1).to(config["device"])
                 faces = faces.to(config["device"])
                 labels = labels.to(config["device"])
                 
-                outputs, a_outputs, v_outputs = model(waves, faces)
+                outputs, a_outputs, v_outputs = model(waves, faces, *text)
                 
                 loss = criterion(outputs, labels)
                 if config["multi"] and a_outputs is not None and v_outputs is not None:
@@ -277,17 +282,19 @@ def train_and_evaluate():
             train_anno = os.path.join(config["data_root"], "protocols", train_file)
             test_anno = os.path.join(config["data_root"], "protocols", test_file)
             
-            train_dataset = AudioVisualDataset(
-                train_anno, 
-                config["audio_path"], 
-                config["visual_path"], 
+            train_dataset = DatasetDOLOS(
+                annotations_file=train_anno, 
+                audio_dir=config["audio_path"], 
+                img_dir=config["visual_path"],
+                transcripts_dir=config["transcripts_path"],
                 ignore_audio_errors=True  # Set to True to continue even with audio errors
             )
 
-            test_dataset = AudioVisualDataset(
-                test_anno, 
-                config["audio_path"], 
-                config["visual_path"], 
+            test_dataset = DatasetDOLOS(
+                annotations_file=test_anno, 
+                audio_dir=config["audio_path"], 
+                img_dir=config["visual_path"],
+                transcripts_dir=config["transcripts_path"],
                 ignore_audio_errors=True  # Set to True to continue even with audio errors
             )
 
@@ -315,6 +322,7 @@ def train_and_evaluate():
                 model = W2V2_Model(config["num_encoders"], config["adapter"], config["adapter_type"])
             elif config["model_to_train"] == "vision":
                 model = ViT_model(config["num_encoders"], config["adapter"], config["adapter_type"])
+            elif config["model_to_train"] == "text": ...
             else:
                 model = Fusion(
                     config["fusion_type"], 

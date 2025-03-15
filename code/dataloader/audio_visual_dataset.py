@@ -3,16 +3,22 @@ import pandas as pd
 from PIL import Image
 import numpy as np
 import warnings
+import json
 
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as T
 import torchaudio
 
+from utils.console import Style
 
-class AudioVisualDataset(Dataset):
-    def __init__(self, annotations_file, audio_dir, img_dir, num_tokens=64, frame_size=160, ignore_audio_errors=False):
-        super(AudioVisualDataset, self).__init__()
+
+class DatasetDOLOS(Dataset):
+    def __init__(self, 
+            annotations_file, audio_dir, img_dir, transcripts_dir,
+            num_tokens=64, frame_size=160, ignore_audio_errors=False
+        ):
+        super(DatasetDOLOS, self).__init__()
 
         # Load annotations without headers - format: [file_name, label, gender]
         self.annos = pd.read_csv(annotations_file, header=None, names=['file_name', 'label', 'gender'])
@@ -31,6 +37,8 @@ class AudioVisualDataset(Dataset):
 
         self.img_dir = img_dir
         self.frame_size = frame_size  # Image size (default 160x160)
+
+        self.transcripts_dir = transcripts_dir # all json file from audio transcription (with whisper)
         
         # Use a transform that ensures the output size is always fixed
         self.transforms = T.Compose([
@@ -79,17 +87,27 @@ class AudioVisualDataset(Dataset):
             if len(frame_files) == 0:
                 problem_files.append(f"No frame files in: {frames_dir}")
                 continue
+
+            # Check if transcript exist
+            transcript_file = os.path.join(self.transcripts_dir, clip_name + ".json")
+            if not os.path.exists(transcript_file):
+                problem_files.append(f"Missing transcript file: {transcript_file}")
+                continue
                 
             # If all checks pass, add to valid indices
             valid_indices.append(idx)
         
         # Print summary of validation
         if problem_files:
-            warnings.warn(f"Found {len(problem_files)} problematic files out of {len(self.annos)}.")
+            txt = Style("WARNING", f"Found {len(problem_files)} problematic files out of {len(self.annos)}.") + "\n"
             for i, problem in enumerate(problem_files[:5]):  # Show first 5 issues
-                warnings.warn(f"  - {problem}")
+                txt += f"  - {Style('WARNING', problem)} \n"
+
             if len(problem_files) > 5:
-                warnings.warn(f"  - ... and {len(problem_files) - 5} more issues")
+                txt += f"  ... and {len(problem_files) - 5} more issues\n"
+
+            warnings.warn(txt, stacklevel=2)
+            
         
         # Filter annotations to only include valid samples
         self.annos = self.annos.iloc[valid_indices].reset_index(drop=True)
@@ -196,6 +214,25 @@ class AudioVisualDataset(Dataset):
         except Exception as e:
             # Re-raise with more context
             raise RuntimeError(f"Error loading frames from {frames_dir}: {str(e)}") from e
+        
+    def _load_transcripts(self, transcript_path, size=256):
+        transcript = json.load(open(transcript_path, 'r'))
+        bert_embedding = torch.tensor(transcript["bert_embedding"]).t() # (256, 768)
+
+        whisper_tokens = []
+        for segment in transcript["segments"]:
+            whisper_tokens.extend(segment["tokens"])
+
+        if len(whisper_tokens) > size: 
+            print("warning - whisper tokens truncated")
+            whisper_tokens = whisper_tokens[:size]
+
+        while len(whisper_tokens) < size: # right padding
+            whisper_tokens.append(0)
+        
+        whisper_tokens = torch.tensor(whisper_tokens).t() # (256, )
+        return whisper_tokens, bert_embedding
+        
 
     def __len__(self):
         return len(self.annos)
@@ -211,6 +248,10 @@ class AudioVisualDataset(Dataset):
         # Process face frames
         frames_dir = os.path.join(self.img_dir, clip_name)
         face_frames = self._load_frames(frames_dir)
+
+        # Process transcript
+        transcript_path = os.path.join(self.transcripts_dir, clip_name + '.json')
+        transcript = self._load_transcripts(transcript_path)
 
         # Process label - make case-insensitive and strip whitespace
         str_label = self.annos.iloc[idx, 1]
@@ -229,10 +270,12 @@ class AudioVisualDataset(Dataset):
         else:
             # Print full details about the problematic label including any whitespace
             label_repr = repr(str_label)  # Shows whitespace characters
-            raise ValueError(f"Undefined label: {label_repr} (type: {type(str_label)}), " 
-                          f"cleaned: '{str_label_clean}', clip_name: {clip_name}")
+            raise ValueError(
+                f"Undefined label: {label_repr} (type: {type(str_label)}), " 
+                f"cleaned: '{str_label_clean}', clip_name: {clip_name}"
+            )
 
-        return mono_waveform, face_frames, label
+        return mono_waveform, face_frames, transcript, label
 
 
 def af_pad_sequence(batch):
@@ -243,18 +286,22 @@ def af_pad_sequence(batch):
 
 
 def af_collate_fn(batch):
-    """Collate function for batching audio and visual data"""
-    tensors, face_tensors, targets = [], [], []
+    """Collate function for batching audio, visual and textual data"""
+    tensors, face_tensors, whisper_tensors, bert_tensors, targets = [], [], [], [], []
 
     # Gather data and encode labels
-    for waveform, face_frames, label in batch:
+    for waveform, face_frames, (whisper_tokens, bert_embedding), label in batch:
         tensors.append(waveform)
         face_tensors.append(face_frames)
+        whisper_tensors.append(whisper_tokens)
+        bert_tensors.append(bert_embedding)
         targets.append(torch.tensor(label))
 
     # Group the tensors into batched tensors
     tensors = af_pad_sequence(tensors)
     face_tensors = torch.stack(face_tensors)
+    whisper_tensors = torch.stack(whisper_tensors)
+    bert_tensors = torch.stack(bert_tensors)
     targets = torch.stack(targets)
 
-    return tensors, face_tensors, targets
+    return tensors, face_tensors, (whisper_tensors, bert_tensors), targets

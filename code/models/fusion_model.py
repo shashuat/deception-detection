@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
-import torchaudio
-import torchvision
-from models.adapter import w2v2_adapter_nlp, w2v2_adapter_conv, vit_adapter_nlp, vit_adapter_conv
-from models.visual_model import cnn_face
 from torch.nn import functional as F
+
+from models.encoders.audio_encoder import WavEncoder
+from models.encoders.visual_encoder import FaceEncoder
 
 
 class CrossFusionModule(nn.Module):
@@ -82,82 +81,23 @@ class Fusion(nn.Module):
     """
     def __init__(self, fusion_type, num_encoders, adapter, adapter_type, multi=False):
         super(Fusion, self).__init__()
+
+        assert fusion_type in ["concat", "cross2"], "The fusion type should be 'concat' or 'cross2' "
+        
         self.fusion_type = fusion_type  # "concat" or "cross2"
         self.num_encoders = num_encoders
         self.adapter = adapter
         self.adapter_type = adapter_type
         self.multi = multi  # multitask learning with multiple losses
 
-        # Audio model components
-        model = torchaudio.pipelines.WAV2VEC2_BASE.get_model()
-        for p in model.parameters():
-            p.requires_grad = False
-
-        # Feature extractor
-        self.FEATURE_EXTRACTOR = model.feature_extractor
-
-        # Feature projection + positional encoding
-        self.encoder_feature_projection = model.encoder.feature_projection
-        self.encoder_pos_conv_embed = model.encoder.transformer.pos_conv_embed
-        self.encoder_layer_norm = model.encoder.transformer.layer_norm
-        self.encoder_dropout = model.encoder.transformer.dropout
-
-        # Build Wav2Vec2 encoder layers
-        audio_layer_list = []
-        for i in range(self.num_encoders):
-            if self.adapter:
-                if self.adapter_type == 'nlp':
-                    audio_layer_list.append(w2v2_adapter_nlp(transformer_encoder=model.encoder.transformer.layers[i]))
-                else:
-                    audio_layer_list.append(w2v2_adapter_conv(transformer_encoder=model.encoder.transformer.layers[i]))
-            else:
-                # Fine-tune encoder if not using adapters
-                for p in model.encoder.transformer.layers[i].parameters(): 
-                    p.requires_grad = True
-                audio_layer_list.append(model.encoder.transformer.layers[i])
-
-        self.TRANSFORMER = nn.ModuleList(audio_layer_list)
-
-        # Visual model components
-        self.projection = nn.Sequential(
-            nn.Linear(256, 768),
-            nn.ReLU(),
-        )
-
-        # Load pretrained ViT
-        weights = torchvision.models.ViT_B_16_Weights.IMAGENET1K_V1
-        vit_b_16 = torchvision.models.vit_b_16(weights=weights)
-        for p in vit_b_16.parameters():
-            p.requires_grad = False
-
-        # Extract encoder only
-        vit = vit_b_16.encoder
-
-        # Learnable positional embedding for 64 tokens
-        self.pos_embedding = nn.Parameter(torch.empty(1, 64, 768).normal_(std=0.02))
-
-        # Build ViT encoder layers
-        face_layer_list = []
-        for i in range(self.num_encoders):
-            if self.adapter:
-                if self.adapter_type == 'nlp':
-                    face_layer_list.append(vit_adapter_nlp(transformer_encoder=vit.layers[i]))
-                else:
-                    face_layer_list.append(vit_adapter_conv(transformer_encoder=vit.layers[i]))
-            else:
-                # Fine-tune encoder if not using adapters
-                for p in vit.layers[i].parameters(): 
-                    p.requires_grad = True
-                face_layer_list.append(vit.layers[i])
-
-        # CNN feature extractor and ViT encoder
-        self.cnn_feature_extractor = cnn_face()
-        self.ViT_Encoder = nn.ModuleList(face_layer_list)
+        self.wav_encoder = WavEncoder(num_encoders, adapter, adapter_type)
+        self.face_encoder = FaceEncoder(num_encoders, adapter, adapter_type)
 
         # Fusion and classification components
         if self.fusion_type == "concat":
             # Simple concatenation of features
             self.classifier = nn.Sequential(nn.Linear(768 * 2, 2))
+
         elif self.fusion_type == "cross2":
             # Cross-modal fusion
             cross_conv_layer = []
@@ -176,62 +116,36 @@ class Fusion(nn.Module):
             if self.multi:
                 self.audio_classifier = nn.Linear(768, 2)
                 self.vision_classifier = nn.Linear(768, 2)
-        else:
-            # Default to concatenation
-            self.classifier = nn.Sequential(nn.Linear(768 * 2, 2))
 
-    def forward(self, x, y):
-        # Process audio
-        x, _ = self.FEATURE_EXTRACTOR(x, None)
+    def forward(self, audios, faces, whisper_tokens, bert_embedding):
         
-        # Apply feature projection
-        x = self.encoder_feature_projection(x)
-        # Apply positional embedding
-        x = self.encoder_pos_conv_embed(x)
-        # Apply layer norm and dropout
-        x = self.encoder_layer_norm(x)
-        audios = self.encoder_dropout(x)
-
-        # Process visual frames
-        b_s, no_of_frames, C, H, W = y.shape
-        y = torch.reshape(y, (b_s * no_of_frames, C, H, W))
-        faces = self.cnn_feature_extractor(y)
-        faces = torch.reshape(faces, (b_s, no_of_frames, 256))
-        
-        # Apply projection and positional embedding
-        faces = self.projection(faces) + self.pos_embedding
-
-        # Apply different fusion strategies
-        feat_ls = []
         if self.fusion_type == "concat":
-            # Process through encoders
-            for audio_net in self.TRANSFORMER:
-                audios = audio_net(audios)
-                
-            for visual_net in self.ViT_Encoder:
-                faces = visual_net(faces)
-                
-            # Simple concatenation
-            fused_output = torch.cat((audios, faces), dim=-1)
+            audio_features = self.wav_encoder(audios, return_all_layers=False)
+            face_features  = self.face_encoder(faces, return_all_layers=False)
+
+            fused_output = torch.cat((audio_features, face_features), dim=-1)
+
         elif self.fusion_type == "cross2":
-            # Cross-modal fusion at each encoder layer
-            assert len(self.TRANSFORMER) == len(self.ViT_Encoder), "Unmatched encoders between audio and face"
+            audio_layers = self.wav_encoder(audios, return_all_layers=True) # generators
+            face_layers  = self.face_encoder(faces, return_all_layers=True)
             
-            for audio_net, visual_net, cross_conv in zip(self.TRANSFORMER, self.ViT_Encoder, self.cross_conv_layer):
-                audios = audio_net(audios)
-                faces = visual_net(faces)
-                fused_features = cross_conv(audios, faces)
+            # assert len(audio_layers) == len(face_layers) == len(self.cross_conv_layer), "Unmatched number of encoder layers for audio, vision, and cross fusion"
+            
+            # cross fusion
+            feat_ls = []
+            for audio_layer, face_layer, cross_conv in zip(audio_layers, face_layers, self.cross_conv_layer):
+                fused_features = cross_conv(audio_layer, face_layer)
                 feat_ls.append(fused_features)
-                
-            # Concatenate features from all layers
+
+            # concatenate features from all layers
             fused_output = torch.cat(feat_ls, dim=-1)
         else:
             raise ValueError(f"Undefined fusion type: {self.fusion_type}")
 
-        # Main classification
+        # classification
         logits = self.classifier(fused_output)
 
-        # Handle multitask learning
+        # multitask learning
         if self.multi:
             a_logits = self.audio_classifier(audios)
             v_logits = self.vision_classifier(faces)
