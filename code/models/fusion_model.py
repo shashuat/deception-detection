@@ -2,21 +2,27 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from models.encoders.audio_encoder import WavEncoder
+from models.encoders.audio_encoder import WavEncoder, WhisperTokenEncoder
+from models.encoders.text_encoder import TextEncoder
 from models.encoders.visual_encoder import FaceEncoder
 
+from models.modality_join.cross_attention import CrossModalAttentionFusion
+from models.modality_join.cross_fusion import CrossFusionModule
 
-class CrossFusionModule(nn.Module):
+ENCODER_DIM = 768
+ENCODER_SEQ_LENGTH = 256
+
+class CrossFusionModule2(nn.Module):
     """
     Cross-modal fusion module: calculates cross-modal attention between audio and visual features
     and returns the fused feature representation.
     """
     def __init__(self, dim=256):
-        super(CrossFusionModule, self).__init__()
+        super(CrossFusionModule2, self).__init__()
 
         # Project features to common dimension
-        self.project_audio = nn.Linear(768, dim)
-        self.project_vision = nn.Linear(768, dim)
+        self.project_audio = nn.Linear(ENCODER_DIM, dim)
+        self.project_vision = nn.Linear(ENCODER_DIM, dim)
         
         # Learnable correlation weights
         self.corr_weights = nn.Parameter(torch.empty(dim, dim).uniform_(-0.1, 0.1))
@@ -79,16 +85,26 @@ class Fusion(nn.Module):
     Multimodal fusion model that combines audio and visual features
     with different fusion strategies and adapter options.
     """
-    def __init__(self, fusion_type, num_encoders, adapter, adapter_type, multi=False):
+
+    ALLOWED_MODALITIES = ["text", "audio", "whisper", "faces"]
+
+    def __init__(self, fusion_type, modalities, num_layers, adapter, adapter_type, multi=False):
         super(Fusion, self).__init__()
 
-        assert fusion_type in ["concat", "cross2"], "The fusion type should be 'concat' or 'cross2' "
-        self.num_encoders = num_encoders
-        self.fusion_type = fusion_type  # "concat" or "cross2"
+        assert fusion_type in ["concat", "cross2", "cross_attention"], "The fusion type should be 'concat' or 'cross2' or 'corss_attention'"
+        assert all(modality in Fusion.ALLOWED_MODALITIES for modality in modalities), f"The possible modalities are: {Fusion.ALLOWED_MODALITIES}"
+        
+        self.num_layers = num_layers
+        self.fusion_type = fusion_type
+        self.modalities = modalities
         self.multi = multi  # multitask learning with multiple losses
 
-        self.wav_encoder = WavEncoder(num_encoders, adapter, adapter_type)
-        self.face_encoder = FaceEncoder(num_encoders, adapter, adapter_type)
+        self.encoders = {
+            "audio": WavEncoder(num_layers, adapter, adapter_type) if "audio" in self.modalities else None,
+            "whisper": WhisperTokenEncoder(ENCODER_DIM, num_layers=num_layers, num_heads=6, hidden_dim=1024) if "whisper" in self.modalities else None,
+            "text": TextEncoder(embedding_dim=ENCODER_DIM, transformer_layers=num_layers) if "text" in self.modalities else None,
+            "faces": FaceEncoder(num_layers, adapter, adapter_type) if "faces" in self.modalities else None
+        }
 
         # Fusion and classification components
         if self.fusion_type == "concat":
@@ -96,14 +112,17 @@ class Fusion(nn.Module):
 
         elif self.fusion_type == "cross2": # Cross-modal fusion
             cross_conv_layer = []
-            for i in range(self.num_encoders):
-                cross_conv_layer.append(CrossFusionModule(dim=256))
+            for i in range(self.num_layers):
+                cross_conv_layer.append(
+                    CrossFusionModule(encoder_dim=ENCODER_DIM, dim=256, num_modalities=2)
+                )
             self.cross_conv_layer = nn.ModuleList(cross_conv_layer)
             
             # Main classifier
             self.classifier = nn.Sequential(
-                nn.Linear(64 * self.num_encoders, 64),
-                nn.Dropout(p=0.5),
+                nn.Linear(64 * self.num_layers, 64),
+                nn.ReLU(),
+                nn.Dropout(p=0.3),
                 nn.Linear(64, 2)
             )
             
@@ -111,17 +130,34 @@ class Fusion(nn.Module):
             if self.multi:
                 self.audio_classifier = nn.Linear(768, 2)
                 self.vision_classifier = nn.Linear(768, 2)
+        
+        elif self.fusion_type == "cross_attention":
+            self.cross_modal_attention = CrossModalAttentionFusion(ENCODER_DIM, 8, num_modalities=len(modalities), dropout=0.1)
+
+            self.classifier = nn.Sequential(
+                nn.Linear(ENCODER_DIM, 512),
+                nn.ReLU(),
+                nn.Dropout(p=0.2),
+                nn.Linear(512, 256),
+                nn.ReLU(),
+                nn.Dropout(p=0.15),
+                nn.Linear(256, 2)
+            )
+
+    def to_device(self, device):
+        self.to(device)
+        for v in self.encoders.values():
+            if v: v.to(device)
 
     def forward(self, audios, faces, whisper_tokens, bert_embedding):
-        
         if self.fusion_type == "concat":
-            audio_features = self.wav_encoder(audios, return_all_layers=False)
+            audio_features = self.whisper_encoder(whisper_tokens, return_all_layers=False)#self.wav_encoder(audios, return_all_layers=False)
             face_features  = self.face_encoder(faces, return_all_layers=False)
 
             fused_output = torch.cat((audio_features, face_features), dim=-1)
 
         elif self.fusion_type == "cross2":
-            audio_layers = self.wav_encoder(audios, return_all_layers=True) # generators
+            audio_layers = self.whisper_encoder(whisper_tokens, return_all_layers=True)#self.wav_encoder(audios, return_all_layers=True) # generators
             face_layers  = self.face_encoder(faces, return_all_layers=True)
             
             # assert len(audio_layers) == len(face_layers) == len(self.cross_conv_layer), "Unmatched number of encoder layers for audio, vision, and cross fusion"
@@ -134,6 +170,20 @@ class Fusion(nn.Module):
 
             # concatenate features from all layers
             fused_output = torch.cat(feat_ls, dim=-1)
+
+        elif self.fusion_type == "cross_attention":
+            latents = []
+            if self.encoders["audio"]:
+                latents.append(self.encoders["audio"](audios))
+            if self.encoders["whisper"]:
+                latents.append(self.encoders["whisper"](whisper_tokens))
+            if self.encoders["text"]:
+                latents.append(self.encoders["text"](bert_embedding))
+            if self.encoders["faces"]:
+                latents.append(self.encoders["faces"](faces))
+
+            fused_output = self.cross_modal_attention(latents)
+
         else:
             raise ValueError(f"Undefined fusion type: {self.fusion_type}")
 

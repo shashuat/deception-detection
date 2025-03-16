@@ -28,16 +28,20 @@ config = {
     
     # Training parameters
     "device": torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
-    "lr": 1e-3,
-    "batch_size": 8,
+    "lr": 1e-5,
+    "batch_size": 10,
     "num_epochs": 20,
+
+    # Model configuration V2
+    "modalities": ["whisper", "text", "faces", "audio"],
+    "num_layers": 4,
     
     # Model configuration
     "model_to_train": "fusion",  # Options: "audio", "vision", "fusion"
     "num_encoders": 4,
     "adapter": True,
     "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
-    "fusion_type": "cross2",  # Options: "concat", "cross2"
+    "fusion_type": "cross_attention",  # Options: "concat", "cross2", "cross_attention"
     "multi": False,  # Use multitask learning
     
     # Protocols for training and testing
@@ -185,12 +189,14 @@ def validate(config, val_loader, model, criterion, loss_audio=None, loss_vision=
                 epoch_labels.append(labels)
                 
         else:  # Fusion model
-            for waves, faces, text, labels in val_loader:
+            for waves, faces, (whisper_tokens, bert_embedding), labels in val_loader:
                 waves = waves.squeeze(1).to(config["device"])
                 faces = faces.to(config["device"])
                 labels = labels.to(config["device"])
+                whisper_tokens = whisper_tokens.to(config["device"])
+                bert_embedding = bert_embedding.to(config["device"])
                 
-                outputs, a_outputs, v_outputs = model(waves, faces, *text)
+                outputs, a_outputs, v_outputs = model(waves, faces, whisper_tokens, bert_embedding)
                 
                 loss = criterion(outputs, labels)
                 if config["multi"] and a_outputs is not None and v_outputs is not None:
@@ -247,18 +253,8 @@ def train_and_evaluate():
 
     if config["adapter"]:
         log_json["adapter_type"] = config["adapter_type"]
-    
-    # Log configuration
+
     with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
-    #     f.write(f"Model: {model_name}\n")
-    #     f.write(f"Learning Rate: {config['lr']}\n")
-    #     f.write(f"Batch Size: {config['batch_size']}\n")
-    #     f.write(f"Epochs: {config['num_epochs']}\n")
-    #     f.write(f"Num Encoders: {config['num_encoders']}\n")
-    #     f.write(f"Adapter: {config['adapter']}\n")
-    #     if config["adapter"]:
-    #         f.write(f"Adapter Type: {config['adapter_type']}\n")
-    #     f.write("----------------------------------------\n\n")
 
     
     # Train and evaluate on each protocol
@@ -318,22 +314,23 @@ def train_and_evaluate():
             print(f"Training samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
             
             # Create model
-            if config["model_to_train"] == "audio":
-                model = W2V2_Model(config["num_encoders"], config["adapter"], config["adapter_type"])
-            elif config["model_to_train"] == "vision":
-                model = ViT_model(config["num_encoders"], config["adapter"], config["adapter_type"])
-            elif config["model_to_train"] == "text": ...
-            else:
-                model = Fusion(
-                    config["fusion_type"], 
-                    config["num_encoders"], 
-                    config["adapter"], 
-                    config["adapter_type"], 
-                    config["multi"]
-                )
+            # if config["model_to_train"] == "audio":
+            #     model = W2V2_Model(config["num_encoders"], config["adapter"], config["adapter_type"])
+            # elif config["model_to_train"] == "vision":
+            #     model = ViT_model(config["num_encoders"], config["adapter"], config["adapter_type"])
+            # elif config["model_to_train"] == "text": ...
+            # else:
+            model = Fusion(
+                config["fusion_type"],
+                config["modalities"],
+                config["num_layers"], 
+                config["adapter"], 
+                config["adapter_type"], 
+                config["multi"]
+            )
             
             # Move model to device
-            model.to(config["device"])
+            model.to_device(config["device"])
             print(f"Model created: {model_name}")
             
             # Create optimizer and loss function

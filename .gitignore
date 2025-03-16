@@ -1,4 +1,6 @@
 .vscode
+__pycache__
+
 
 Audio-Visual-Deception-Detection-DOLOS-Dataset-and-Parameter-Efficient-Crossmodal-Learning/
 
@@ -8,9 +10,7 @@ av_data_process/
 
 DOLOS.zip
 DOLOS
-
-__pycache__
-
 logs
-
 data
+
+/config.py

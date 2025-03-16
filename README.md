@@ -8,9 +8,13 @@ Download and unzip `data.zip`to avoid to recompute all data processing (~7GB of 
 pip install -r requirements.txt
 ```
 i did pip freeze > requirements_new.txt (15/03, 12:30 this works)
-run `YT_video_downloader2.py` to get video chunks in `code/data_preprocess/data/downloaded`
+
+Create `config.py` if needed to indicate where to find DOLOS (`DOLOS_PATH`) and data (`DATA_PATH`)
+
+run `setup.py` to check the setup
 
 ## Dataset Preprocessing
+run `YT_video_downloader2.py` to get video chunks in `code/data_preprocess/data/downloaded`
 
 1. Download Video Chunks
 run `our_yt_video_downloader.py` to get video chunks 

@@ -116,10 +116,14 @@ class FaceEncoder(nn.Module):
         faces = self.projection(faces) + self.pos_embedding
         
         if return_all_layers:
-            for layer in self.ViT_layers:
-                yield layer(faces)
-            return
+            return self._layer_generator(faces)
         
         for layer in self.ViT_layers:
             faces = layer(faces)
         return faces
+    
+    def _layer_generator(self, x):
+        """Generator function to yield outputs of each transformer layer."""
+        for layer in self.transformer.layers:
+            x = layer(x)  # (batch, 64, embed)
+            yield x

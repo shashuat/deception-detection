@@ -19,3 +19,4 @@ class W2V2_Model(nn.Module):
         
         # Average predictions over all tokens
         return torch.mean(logits, 1) # strange ??
+
