@@ -83,11 +83,8 @@ class Fusion(nn.Module):
         super(Fusion, self).__init__()
 
         assert fusion_type in ["concat", "cross2"], "The fusion type should be 'concat' or 'cross2' "
-        
-        self.fusion_type = fusion_type  # "concat" or "cross2"
         self.num_encoders = num_encoders
-        self.adapter = adapter
-        self.adapter_type = adapter_type
+        self.fusion_type = fusion_type  # "concat" or "cross2"
         self.multi = multi  # multitask learning with multiple losses
 
         self.wav_encoder = WavEncoder(num_encoders, adapter, adapter_type)
@@ -95,11 +92,9 @@ class Fusion(nn.Module):
 
         # Fusion and classification components
         if self.fusion_type == "concat":
-            # Simple concatenation of features
             self.classifier = nn.Sequential(nn.Linear(768 * 2, 2))
 
-        elif self.fusion_type == "cross2":
-            # Cross-modal fusion
+        elif self.fusion_type == "cross2": # Cross-modal fusion
             cross_conv_layer = []
             for i in range(self.num_encoders):
                 cross_conv_layer.append(CrossFusionModule(dim=256))
