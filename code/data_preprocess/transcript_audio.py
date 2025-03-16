@@ -7,7 +7,7 @@ import torch
 
 from transformers import AutoModel, AutoTokenizer
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from setup import get_env
 
 ENV = get_env()
@@ -54,8 +54,8 @@ for filename in tqdm.tqdm(audio_files):
     audio_file = os.path.join(audio_dir, filename)
     output_path = os.path.join(output_dir, filename.replace(".wav", ".json"))
 
-    output = json.load(open(output_path, 'r'))
-    # output = transcribe_audio(audio_file)
+    # output = json.load(open(output_path, 'r'))
+    output = transcribe_audio(audio_file)
     output["bert_embedding"] = get_padded_bert_embeddings(output["text"]).tolist()
 
     with open(output_path, 'w') as f: json.dump(output, f, indent=4)

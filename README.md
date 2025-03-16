@@ -63,7 +63,11 @@ Finally, you should have such a data directory structure
 ├── ...
 ```
 
+## wandb config
+make an `.env` file with `WANDB_TOKEN=e58e...` and login is handled in the __init__.py file
+
 ## Running the model
+
 1. Configure the model in `train_test.py` by modifying the `config` dictionary if needed
 
 ```bash

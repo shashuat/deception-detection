@@ -110,7 +110,7 @@ def check_env(_print=True):
     if errors:
         txt = Style("ERROR", "Environment check failed:") + "\n"
         for e in errors:
-            txt += "- " + e
+            txt += "- " + str(e)
 
         if not _print:
             raise FileNotFoundError(txt)
