@@ -124,6 +124,6 @@ class FaceEncoder(nn.Module):
     
     def _layer_generator(self, x):
         """Generator function to yield outputs of each transformer layer."""
-        for layer in self.transformer.layers:
+        for layer in self.ViT_layers:
             x = layer(x)  # (batch, 64, embed)
             yield x

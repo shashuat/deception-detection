@@ -52,9 +52,6 @@ class CrossFusionModule(nn.Module):
         # Project each latent space to the common dimension: [B, 64, dim]
         projected = []
         for i, latent in enumerate(latent_list):
-            # In case a latent is wrapped in a tuple, take the first element
-            if isinstance(latent, tuple):
-                latent = latent[0]
             projected.append(self.projections[i](latent))
         
         # Use the first modality as the anchor

@@ -22,6 +22,8 @@ class DatasetDOLOS(Dataset):
 
         # Load annotations without headers - format: [file_name, label, gender]
         self.annos = pd.read_csv(annotations_file, header=None, names=['file_name', 'label', 'gender'])
+
+        self.dolos_data = pd.read_excel("../DOLOS/Dolos.xlsx")
         
         # Clean up column data - strip whitespace
         if 'file_name' in self.annos.columns:
@@ -54,6 +56,8 @@ class DatasetDOLOS(Dataset):
         
         # Filter out samples with missing or invalid data
         self._validate_samples()
+
+        self.num_sub_labels = len(self.dolos_data.columns) - 8
 
     def _validate_samples(self):
         """Validate all samples and filter out problematic ones"""
@@ -274,8 +278,12 @@ class DatasetDOLOS(Dataset):
                 f"Undefined label: {label_repr} (type: {type(str_label)}), " 
                 f"cleaned: '{str_label_clean}', clip_name: {clip_name}"
             )
-
-        return mono_waveform, face_frames, transcript, label
+        
+        sub_labels = self.dolos_data.iloc[idx, 8:]
+        # Convert each sub label to int if possible (you can adjust the conversion as needed)
+        sub_labels_int = sub_labels.apply(lambda x: str(x) != '0')
+        
+        return mono_waveform, face_frames, transcript, label, list(sub_labels_int.values)
 
 
 def af_pad_sequence(batch):
@@ -287,15 +295,16 @@ def af_pad_sequence(batch):
 
 def af_collate_fn(batch):
     """Collate function for batching audio, visual and textual data"""
-    tensors, face_tensors, whisper_tensors, bert_tensors, targets = [], [], [], [], []
+    tensors, face_tensors, whisper_tensors, bert_tensors, targets, sublabels_list = [], [], [], [], [], []
 
     # Gather data and encode labels
-    for waveform, face_frames, (whisper_tokens, bert_embedding), label in batch:
+    for waveform, face_frames, (whisper_tokens, bert_embedding), label, sub_labels in batch:
         tensors.append(waveform)
         face_tensors.append(face_frames)
         whisper_tensors.append(whisper_tokens)
         bert_tensors.append(bert_embedding)
         targets.append(torch.tensor(label))
+        sublabels_list.append(torch.tensor(sub_labels, dtype=torch.long))
 
     # Group the tensors into batched tensors
     tensors = af_pad_sequence(tensors)
@@ -304,4 +313,14 @@ def af_collate_fn(batch):
     bert_tensors = torch.stack(bert_tensors)
     targets = torch.stack(targets)
 
-    return tensors, face_tensors, (whisper_tensors, bert_tensors), targets
+    data = {
+        "faces": face_tensors,
+        "audio": tensors.squeeze(1),
+        "whisper": whisper_tensors,
+        "text": bert_tensors
+    }
+
+    # Convert list of sublabel lists into a tensor of shape (batch_size, num_sublabels)
+    batched_sublabels = torch.stack(sublabels_list)
+
+    return data, targets, batched_sublabels

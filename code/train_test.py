@@ -29,22 +29,19 @@ config = {
     "log_dir": ENV["LOGS_PATH"],
     
     # Training parameters
-    "device": torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
-    "lr": 1e-5,
+    "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    "lr": 1e-4,
     "batch_size": 4,
     "num_epochs": 20,
 
-    # Model configuration V2
-    "modalities": ["whisper", "text", "faces", "audio"],
-    "num_layers": 4,
-    
     # Model configuration
-    "model_to_train": "vision",  # Options: "audio", "vision", "fusion"
-    "num_encoders": 4,
+    "modalities": ["faces", "audio", "text", "whisper"],
+    "num_layers": 4,
     "adapter": True,
     "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
     "fusion_type": "cross_attention",  # Options: "concat", "cross2", "cross_attention"
-    "multi": False,  # Use multitask learning
+    "multi": True,  # Use multitask learning
+    "sub_labels": False, # Use sub labels (smile, cry, etc.)
     
     # Protocols for training and testing
     "protocols": [
@@ -66,199 +63,144 @@ config = {
     }
 }
 
-def train_one_epoch(config, train_loader, model, optimizer, criterion, loss_audio=None, loss_vision=None):
+def train_one_epoch(config, train_loader, model, optimizer, criterion, sub_loss, sub_labels_loss):
     """Train model for one epoch"""
     model.train()
     epoch_loss = []
     epoch_preds = []
     epoch_labels = []
+    epoch_subloss = []
+    epoch_subpreds = {}
+    epoch_sub_labels_loss = []
     start_time = time.time()
     
-    if config["model_to_train"] == "audio":
-        for i, (waves, _, _, labels) in enumerate(train_loader):
-            # Prepare input
-            waves = waves.squeeze(1).to(config["device"])
-            labels = labels.to(config["device"])
+    for i, (train_data, labels, sub_labels) in enumerate(train_loader):
+        # Prepare input
+        # waves = waves.squeeze(1).to(config["device"]) 
+        # faces = faces
+        # whisper_tokens = whisper_tokens.to(config["device"])
+        # bert_embedding = bert_embedding.to(config["device"])
+
+        labels = labels.to(config["device"])
+        sub_labels = sub_labels.to(config["device"])
+        model_input = {k: v.to(config["device"]) for k, v in train_data.items()}
+        
+        # Forward pass
+        optimizer.zero_grad()
+        outputs, outputs_sub_labels, sub_outputs = model(model_input)
+        
+        # Calculate loss
+        loss = criterion(outputs, labels)
+        if config["multi"] and sub_outputs is not None:
+            secondary_loss = {
+                k: criterion(sub_outputs[k], labels)
+                for k, criterion in sub_loss.items()
+            }
+            loss = 0.7 * loss + 0.3 * sum(secondary_loss.values()) / len(secondary_loss)
+            epoch_subloss.append({k: v.item() for k, v in secondary_loss.items()})
+
+            for k, v in sub_outputs.items():
+                epoch_subpreds[k] = epoch_subpreds.get(k, []) + [torch.argmax(v, dim=1)]
+
+        if config["sub_labels"]:
+            sub_labels_loss_values = []
+            for idx in range(len(sub_labels_loss)):
+                sub_labels_loss_values.append(sub_labels_loss[idx](outputs_sub_labels[idx], sub_labels[:, idx]))
             
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(waves)
-            loss = criterion(outputs, labels)
+            loss = 0.85 * loss + 0.15 * sum(sub_labels_loss_values) / len(sub_labels_loss_values)
+            epoch_sub_labels_loss.append([v.item() for v in sub_labels_loss_values])
             
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            # Track progress
-            epoch_loss.append(loss.item())
-            epoch_preds.append(torch.argmax(outputs, dim=1))
-            epoch_labels.append(labels)
-            
-            if i % 10 == 0:
-                print(f"Batch {i}, Loss: {loss.item():.5f}")
-                # Log batch-level metrics
-                wandb.log({
-                    "batch/loss": loss.item(),
-                    "batch/step": i + len(train_loader) * wandb.run.step
-                })
-                
-    elif config["model_to_train"] == "vision":
-        for i, (_, faces, _, labels) in enumerate(train_loader):
-            # Prepare input
-            faces = faces.to(config["device"])
-            labels = labels.to(config["device"])
-            
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(faces)
-            loss = criterion(outputs, labels)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            # Track progress
-            epoch_loss.append(loss.item())
-            epoch_preds.append(torch.argmax(outputs, dim=1))
-            epoch_labels.append(labels)
-            
-            if i % 10 == 0:
-                print(f"Batch {i}, Loss: {loss.item():.5f}")
-                # Log batch-level metrics
-                wandb.log({
-                    "batch/loss": loss.item(),
-                    "batch/step": i + len(train_loader) * wandb.run.step
-                })
-    
-    elif config["model_to_train"] == "text": 
-        # Placeholder for text model training
-        pass
-                
-    else:  # Fusion model
-        for i, (waves, faces, (whisper_tokens, bert_embedding), labels) in enumerate(train_loader):
-            # Prepare input
-            waves = waves.squeeze(1).to(config["device"])
-            faces = faces.to(config["device"])
-            whisper_tokens = whisper_tokens.to(config["device"])
-            bert_embedding = bert_embedding.to(config["device"])
-            labels = labels.to(config["device"])
-            
-            # Forward pass
-            optimizer.zero_grad()
-            outputs, a_outputs, v_outputs = model(waves, faces, whisper_tokens, bert_embedding)
-            
-            # Calculate loss
-            loss = criterion(outputs, labels)
-            total_loss = loss
-            
-            # Multi-task learning losses
-            if config["multi"] and a_outputs is not None and v_outputs is not None:
-                a_loss = loss_audio(a_outputs, labels)
-                v_loss = loss_vision(v_outputs, labels)
-                total_loss = loss + a_loss + v_loss
-                
-                # Log individual component losses
-                wandb.log({
-                    "batch/main_loss": loss.item(),
-                    "batch/audio_loss": a_loss.item(),
-                    "batch/visual_loss": v_loss.item()
-                }, commit=False)
-            
-            # Backward pass
-            total_loss.backward()
-            optimizer.step()
-            
-            # Track progress
-            epoch_loss.append(total_loss.item())
-            epoch_preds.append(torch.argmax(outputs, dim=1))
-            epoch_labels.append(labels)
-            
-            if i % 10 == 0:
-                print(f"Batch {i}, Loss: {total_loss.item():.5f}")
-                # Log batch-level metrics
-                wandb.log({
-                    "batch/loss": total_loss.item(),
-                    "batch/step": i + len(train_loader) * wandb.run.step
-                })
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        # Track progress
+        epoch_loss.append(loss.item())
+        epoch_preds.append(torch.argmax(outputs, dim=1))
+        epoch_labels.append(labels)
+        
+        if i % 10 == 0:
+            print(f"Batch {i}, Loss: {loss.item():.5f}")
     
     # Combine results
     epoch_preds = torch.cat(epoch_preds)
     epoch_labels = torch.cat(epoch_labels)
     avg_loss = np.mean(epoch_loss)
+    avg_sub_loss = {}
+    if config["multi"]:
+        avg_sub_loss = {}
+        for info in epoch_subloss:
+            for k, v in info.items():
+                avg_sub_loss[k] = avg_sub_loss.get(k, []) + [v]
+        
+        for k in avg_sub_loss:
+            avg_sub_loss[k] = sum(avg_sub_loss[k]) / len(avg_sub_loss[k])
+            epoch_subpreds[k] = torch.cat(epoch_subpreds[k])
     
     time_taken = time.time() - start_time
     print(f"Training completed in {time_taken:.2f} seconds")
-    # Log training time
-    wandb.log({"epoch/training_time": time_taken})
+
+    epoch_sub_labels_loss_tensor = torch.tensor(epoch_sub_labels_loss)  # Shape: [num_batches, num_heads]
+    mean_loss_per_head = epoch_sub_labels_loss_tensor.mean(dim=0)  # Shape: [num_heads]
+    mean_loss_per_head_list = mean_loss_per_head.tolist()
     
-    return avg_loss, epoch_preds, epoch_labels
+    return avg_loss, epoch_preds, epoch_labels, avg_sub_loss, epoch_subpreds, mean_loss_per_head_list
 
 
-def validate(config, val_loader, model, criterion, loss_audio=None, loss_vision=None):
+def validate(config, val_loader, model, criterion, sub_loss):
     """Validate model on validation set"""
     model.eval()
     epoch_loss = []
     epoch_preds = []
     epoch_labels = []
-    start_time = time.time()
+    epoch_subloss = []
+    epoch_subpreds = {}
     
     with torch.no_grad():
-        if config["model_to_train"] == "audio":
-            for waves, _, _, labels in val_loader:
-                waves = waves.squeeze(1).to(config["device"])
-                labels = labels.to(config["device"])
-                
-                outputs = model(waves)
-                loss = criterion(outputs, labels)
-                
-                epoch_loss.append(loss.item())
-                epoch_preds.append(torch.argmax(outputs, dim=1))
-                epoch_labels.append(labels)
-                
-        elif config["model_to_train"] == "vision":
-            for _, faces, _, labels in val_loader:
-                faces = faces.to(config["device"])
-                labels = labels.to(config["device"])
-                
-                outputs = model(faces)
-                loss = criterion(outputs, labels)
-                
-                epoch_loss.append(loss.item())
-                epoch_preds.append(torch.argmax(outputs, dim=1))
-                epoch_labels.append(labels)
-                
-        else:  # Fusion model
-            for waves, faces, (whisper_tokens, bert_embedding), labels in val_loader:
-                waves = waves.squeeze(1).to(config["device"])
-                faces = faces.to(config["device"])
-                labels = labels.to(config["device"])
-                whisper_tokens = whisper_tokens.to(config["device"])
-                bert_embedding = bert_embedding.to(config["device"])
-                
-                outputs, a_outputs, v_outputs = model(waves, faces, whisper_tokens, bert_embedding)
-                
-                loss = criterion(outputs, labels)
-                total_loss = loss
-                
-                if config["multi"] and a_outputs is not None and v_outputs is not None:
-                    a_loss = loss_audio(a_outputs, labels)
-                    v_loss = loss_vision(v_outputs, labels)
-                    total_loss = loss + a_loss + v_loss
-                
-                epoch_loss.append(total_loss.item())
-                epoch_preds.append(torch.argmax(outputs, dim=1))
-                epoch_labels.append(labels)
+        for val_data, labels, sub_labels in val_loader:
+            # waves = waves.squeeze(1).to(config["device"])
+            # faces = faces.to(config["device"])
+            # labels = labels.to(config["device"])
+            # whisper_tokens = whisper_tokens.to(config["device"])
+            # bert_embedding = bert_embedding.to(config["device"])
+
+            labels = labels.to(config["device"])
+            model_input = {k: v.to(config["device"]) for k, v in val_data.items()}
+            
+            outputs, outputs_sub_labels, sub_outputs = model(model_input)
+            
+            loss = criterion(outputs, labels)
+            if config["multi"] and sub_outputs is not None:
+                secondary_loss = {
+                    k: criterion(sub_outputs[k], labels)
+                    for k, criterion in sub_loss.items()
+                }
+                loss = 0.7 * loss + 0.3 * sum(secondary_loss.values()) / len(secondary_loss)
+                epoch_subloss.append({k: v.item() for k, v in secondary_loss.items()})
+
+                for k, v in sub_outputs.items():
+                    epoch_subpreds[k] = epoch_subpreds.get(k, []) + [torch.argmax(v, dim=1)]
+            
+            epoch_loss.append(loss.item())
+            epoch_preds.append(torch.argmax(outputs, dim=1))
+            epoch_labels.append(labels)
     
     # Combine results
     epoch_preds = torch.cat(epoch_preds)
     epoch_labels = torch.cat(epoch_labels)
     avg_loss = np.mean(epoch_loss)
-    
-    time_taken = time.time() - start_time
-    wandb.log({"epoch/validation_time": time_taken})
-    
-    return avg_loss, epoch_preds, epoch_labels
 
+    avg_sub_loss = {}
+    if config["multi"]:
+        for info in epoch_subloss:
+            for k, v in info.items():
+                avg_sub_loss[k] = avg_sub_loss.get(k, []) + [v]
+        
+        for k in avg_sub_loss:
+            avg_sub_loss[k] = sum(avg_sub_loss[k]) / len(avg_sub_loss[k])
+            epoch_subpreds[k] = torch.cat(epoch_subpreds[k])
+
+    return avg_loss, epoch_preds, epoch_labels, avg_sub_loss, epoch_subpreds
 
 def evaluate_metrics(labels, preds):
     """Calculate evaluation metrics"""
@@ -267,7 +209,6 @@ def evaluate_metrics(labels, preds):
     fpr, tpr, _ = roc_curve(labels, preds, pos_label=1)
     auc_score = auc(fpr, tpr)
     return acc, f1, auc_score
-
 
 def train_and_evaluate():
     """Main training and evaluation function"""
@@ -284,11 +225,9 @@ def train_and_evaluate():
     os.makedirs(config["log_dir"], exist_ok=True)
     
     # Create model name
-    model_name = f"DOLOS_{config['model_to_train']}_Encoders_{config['num_encoders']}_Adapter_{config['adapter']}"
+    model_name = f"DOLOS_layers_{config['num_layers']}_Adapter_{config['adapter']}"
     if config["adapter"]:
         model_name += f"_type_{config['adapter_type']}"
-    if config["model_to_train"] == "fusion":
-        model_name += f"_fusion_{config['fusion_type']}"
     if config["multi"]:
         model_name += "_multi"
     
@@ -298,11 +237,11 @@ def train_and_evaluate():
     # Create log file
     log_file = os.path.join(config["log_dir"], f"{int(time.time())}_{model_name}.json")
     log_json = {
-        "model": model_name,
+        "modalities": config["modalities"],
         "learning_rate": config["lr"],
         "batch_size": config["batch_size"],
         "num_pochs": config["num_epochs"],
-        "num_encoders": config["num_encoders"],
+        "num_layers": config["num_layers"],
         "adapter": config["adapter"],
         "runs": {}
     }
@@ -311,7 +250,7 @@ def train_and_evaluate():
         log_json["adapter_type"] = config["adapter_type"]
 
     with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
-
+    
     # Train and evaluate on each protocol
     try:
         for protocol in config["protocols"]:
@@ -376,42 +315,42 @@ def train_and_evaluate():
                 "dataset/test_samples": len(test_dataset)
             })
             
-            # Create model
-            if config["model_to_train"] == "audio":
-                model = W2V2_Model(config["num_encoders"], config["adapter"], config["adapter_type"])
-            elif config["model_to_train"] == "vision":
-                model = ViT_model(config["num_encoders"], config["adapter"], config["adapter_type"])
-            else:  # Fusion model
-                model = Fusion(
-                    config["fusion_type"],
-                    config["modalities"],
-                    config["num_layers"], 
-                    config["adapter"], 
-                    config["adapter_type"], 
-                    config["multi"]
-                )
+            model = Fusion(
+                config["fusion_type"],
+                config["modalities"],
+                config["num_layers"], 
+                config["adapter"], 
+                config["adapter_type"], 
+                config["multi"],
+                train_dataset.num_sub_labels
+            )
             
             # Move model to device
-            if config["model_to_train"] == "fusion":
-                model.to_device(config["device"])
-            else:
-                model.to(config["device"])
+            model.to_device(config["device"])
                 
             print(f"Model created: {model_name}")
             
             # Create optimizer and loss function
             optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='max', factor=0.5, patience=3
+            )
             criterion = nn.CrossEntropyLoss()
             
             # Additional loss functions for multitask learning
-            loss_audio = loss_vision = None
+            secondary_loss = {}
             if config["multi"]:
-                loss_audio = nn.CrossEntropyLoss()
-                loss_vision = nn.CrossEntropyLoss()
+                secondary_loss = {
+                    k: nn.CrossEntropyLoss()
+                    for k in config["modalities"]
+                }
                 print("Multitask learning enabled")
-            
-            # Watch the model in wandb
-            wandb.watch(model, criterion, log="all", log_freq=10)
+
+            sub_labels_loss = []
+            if config["sub_labels"]:
+                print(train_dataset.num_sub_labels)
+                for _ in range(train_dataset.num_sub_labels):
+                    sub_labels_loss.append(nn.CrossEntropyLoss())
             
             # Training loop
             best_acc = 0.0
@@ -421,60 +360,69 @@ def train_and_evaluate():
                 print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
                 
                 # Train for one epoch
-                train_loss, train_preds, train_labels = train_one_epoch(
-                    config, train_loader, model, optimizer, criterion, loss_audio, loss_vision
+                train_loss, train_preds, train_labels, train_sub_loss, train_sub_preds, sub_labels_loss_values = train_one_epoch(
+                    config, train_loader, model, optimizer, criterion, secondary_loss, sub_labels_loss
                 )
                 
                 # Calculate training metrics
                 train_acc, train_f1, train_auc = evaluate_metrics(
                     train_labels.cpu().numpy(), train_preds.cpu().numpy()
                 )
+
+                if config["multi"]:
+                    for k in train_sub_preds:
+                        train_sub_preds[k] = evaluate_metrics(
+                            train_labels.cpu().numpy(), train_sub_preds[k].cpu().numpy()
+                        )
                 
                 # Validate
-                val_loss, val_preds, val_labels = validate(
-                    config, test_loader, model, criterion, loss_audio, loss_vision
+                val_loss, val_preds, val_labels, val_sub_loss, val_sub_preds = validate(
+                    config, test_loader, model, criterion, secondary_loss
                 )
                 
                 # Calculate validation metrics
                 val_acc, val_f1, val_auc = evaluate_metrics(
                     val_labels.cpu().numpy(), val_preds.cpu().numpy()
                 )
+
+                if config["multi"]:
+                    for k in val_sub_preds:
+                        val_sub_preds[k] = evaluate_metrics(
+                            val_labels.cpu().numpy(), val_sub_preds[k].cpu().numpy()
+                        )
                 
                 # Print results
                 print(f"Epoch {epoch+1} Results:")
                 print(f"  Train - Loss: {train_loss:.5f}, Acc: {train_acc:.5f}, F1: {train_f1:.5f}, AUC: {train_auc:.5f}")
                 print(f"  Valid - Loss: {val_loss:.5f}, Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}")
-                
-                # Log metrics to wandb
-                wandb.log({
-                    "epoch": epoch+1,
-                    "train/loss": train_loss,
-                    "train/accuracy": train_acc,
-                    "train/f1": train_f1,
-                    "train/auc": train_auc,
-                    "val/loss": val_loss,
-                    "val/accuracy": val_acc,
-                    "val/f1": val_f1,
-                    "val/auc": val_auc,
-                    "learning_rate": optimizer.param_groups[0]['lr']
-                })
+                print(f"  Train - Sub-Loss: {train_sub_loss} | {train_sub_preds}")
+                print(f"  Valid - Sub-Loss: {val_sub_loss} | {val_sub_preds}")
+
+                print(f"Train - sub labels loss: {sub_labels_loss_values}")
+
+                scheduler.step(val_acc)
                 
                 # Update log file
-                epoch_data = {
+                log_json["runs"][protocol_key]["steps"].append({
                     "epoch": epoch+1,
-                    "train_loss": train_loss,
-                    "train_acc": train_acc,
-                    "validation_loss": val_loss,
-                    "validation_acc": val_acc,
-                    "validation_F1": val_f1,
-                    "validation_AUC": val_auc
-                }
-                log_json["runs"][protocol_key]["steps"].append(epoch_data)
+                    "train": {"loss": train_loss, "acc": train_acc},
+                    "val": {
+                        "loss": val_loss, 
+                        "acc": val_acc,
+                        "F1": val_f1,
+                        "AUC": val_auc
+                    },
+                })
+
+
+                if config["multi"]:
+                    log_json["runs"][protocol_key]["steps"][-1]["train"]["sub_loss"] = train_sub_loss
+                    log_json["runs"][protocol_key]["steps"][-1]["train"]["sub_acc"] = train_sub_preds
+                    log_json["runs"][protocol_key]["steps"][-1]["val"]["sub_loss"] = val_sub_loss
+                    log_json["runs"][protocol_key]["steps"][-1]["val"]["sub_acc"] = val_sub_preds
+
                 with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
-                
-                # Also save the log file to wandb
-                wandb.save(log_file)
-                
+
                 # Save best model
                 if val_acc > best_acc:
                     best_acc = val_acc
@@ -524,7 +472,7 @@ def train_and_evaluate():
                     print(f"New best model saved to {model_path}")
                     
                     # Log the best model to wandb
-                    wandb.save(model_path)
+                    if wandb.run is not None: wandb.save(model_path)
             
             # Log final results
             print("\nTraining completed.")
@@ -560,7 +508,7 @@ def train_and_evaluate():
 
             with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
 
-    except Exception as e:
+    except Exception as e: # before raise exception, save it in the log.json
         log_json["error"] = e.__str__()
         tb = traceback.format_exc()
         log_json["traceback"] = str(tb)

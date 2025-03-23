@@ -22,6 +22,7 @@ class WavEncoder(nn.Module):
         self.encoder_layer_norm = model.encoder.transformer.layer_norm
         self.encoder_dropout = model.encoder.transformer.dropout
 
+        self.dropout = nn.Dropout(0.05)
         # Build Wav2Vec2 encoder layers
         audio_layer_list = []
         for i in range(num_encoders):
@@ -59,16 +60,18 @@ class WavEncoder(nn.Module):
         
         for layer in self.transformer_layers:
             audios = layer(audios)
+            audios = self.dropout(audios)
         return audios
     
     def _layer_generator(self, x):
         """Generator function to yield outputs of each transformer layer."""
         for layer in self.transformer_layers:
             x = layer(x)  # (batch, 64, embed)
+            x = self.dropout(x)
             yield x
 
 class WhisperTokenEncoder(nn.Module):
-    def __init__(self, embedding_dim, num_layers, num_heads, hidden_dim, vocab_size=51866, dropout=0.1):
+    def __init__(self, embedding_dim, num_layers, num_heads, hidden_dim, vocab_size=51866, dropout=0.15):
         """
         Transformer-based encoder for Whisper tokens.
 

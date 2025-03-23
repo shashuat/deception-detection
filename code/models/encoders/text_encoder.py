@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class TextEncoder(nn.Module):
-    def __init__(self, embedding_dim=768, transformer_layers=4, transformer_heads=6, transformer_hidden_dim=1024, dropout=0.1):
+    def __init__(self, embedding_dim=768, transformer_layers=4, transformer_heads=6, transformer_hidden_dim=1024, dropout=0.15):
         super(TextEncoder, self).__init__()
         
         # Downsample the sequence using a 1D convolution from 256 to 64 tokens.
