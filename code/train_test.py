@@ -31,8 +31,9 @@ config = {
     # Training parameters
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     "lr": 1e-4,
-    "batch_size": 4,
+    "batch_size": 8,
     "num_epochs": 20,
+    "warmup_epochs": 1,  # warmup epochs for scheduler
 
     # Model configuration
     "modalities": ["faces", "audio", "text", "whisper"],
@@ -140,9 +141,9 @@ def train_one_epoch(config, train_loader, model, optimizer, criterion, sub_loss,
     time_taken = time.time() - start_time
     print(f"Training completed in {time_taken:.2f} seconds")
 
-    epoch_sub_labels_loss_tensor = torch.tensor(epoch_sub_labels_loss)  # Shape: [num_batches, num_heads]
-    mean_loss_per_head = epoch_sub_labels_loss_tensor.mean(dim=0)  # Shape: [num_heads]
-    mean_loss_per_head_list = mean_loss_per_head.tolist()
+    epoch_sub_labels_loss_tensor = torch.tensor(epoch_sub_labels_loss) if epoch_sub_labels_loss else torch.tensor([])  # Shape: [num_batches, num_heads]
+    mean_loss_per_head = epoch_sub_labels_loss_tensor.mean(dim=0) if epoch_sub_labels_loss_tensor.numel() > 0 else torch.tensor([])  # Shape: [num_heads]
+    mean_loss_per_head_list = mean_loss_per_head.tolist() if mean_loss_per_head.numel() > 0 else []
     
     return avg_loss, epoch_preds, epoch_labels, avg_sub_loss, epoch_subpreds, mean_loss_per_head_list
 
@@ -205,10 +206,24 @@ def validate(config, val_loader, model, criterion, sub_loss):
 def evaluate_metrics(labels, preds):
     """Calculate evaluation metrics"""
     acc = accuracy_score(labels, preds)
-    f1 = f1_score(labels, preds)
+    f1 = f1_score(labels, preds, zero_division=0)  # Added zero_division=0 to handle warnings
     fpr, tpr, _ = roc_curve(labels, preds, pos_label=1)
     auc_score = auc(fpr, tpr)
     return acc, f1, auc_score
+
+def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr=0.0, last_epoch=-1):
+    """
+    Create a schedule with a learning rate that decreases following the values of the cosine function
+    between the initial lr set in the optimizer and 0, with a warmup period.
+    """
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        cosine_decay = 0.5 * (1.0 + np.cos(np.pi * progress))
+        return max(min_lr, cosine_decay)
+    
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
 
 def train_and_evaluate():
     """Main training and evaluation function"""
@@ -332,9 +347,17 @@ def train_and_evaluate():
             
             # Create optimizer and loss function
             optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='max', factor=0.5, patience=3
+            
+            # Improved LR scheduler: Cosine annealing with warmup
+            total_steps = config["num_epochs"] * len(train_loader)
+            warmup_steps = config["warmup_epochs"] * len(train_loader)
+            scheduler = get_cosine_schedule_with_warmup(
+                optimizer, 
+                num_warmup_steps=warmup_steps,
+                num_training_steps=total_steps,
+                min_lr=1e-6  # Minimum learning rate at the end of schedule
             )
+            
             criterion = nn.CrossEntropyLoss()
             
             # Additional loss functions for multitask learning
@@ -355,6 +378,10 @@ def train_and_evaluate():
             # Training loop
             best_acc = 0.0
             print(f"Starting training for {config['num_epochs']} epochs")
+            
+            # Create a local directory for saving models
+            local_model_dir = os.path.join(os.getcwd(), "wandb_models")
+            os.makedirs(local_model_dir, exist_ok=True)
             
             for epoch in range(config["num_epochs"]):
                 print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
@@ -391,16 +418,33 @@ def train_and_evaluate():
                             val_labels.cpu().numpy(), val_sub_preds[k].cpu().numpy()
                         )
                 
+                # Log metrics to wandb
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "train/loss": train_loss,
+                    "train/accuracy": train_acc,
+                    "train/f1": train_f1,
+                    "train/auc": train_auc,
+                    "val/loss": val_loss,
+                    "val/accuracy": val_acc,
+                    "val/f1": val_f1,
+                    "val/auc": val_auc,
+                    "learning_rate": optimizer.param_groups[0]['lr']
+                })
+                
+                # Update scheduler at each step
+                scheduler.step()
+                
                 # Print results
                 print(f"Epoch {epoch+1} Results:")
                 print(f"  Train - Loss: {train_loss:.5f}, Acc: {train_acc:.5f}, F1: {train_f1:.5f}, AUC: {train_auc:.5f}")
                 print(f"  Valid - Loss: {val_loss:.5f}, Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}")
                 print(f"  Train - Sub-Loss: {train_sub_loss} | {train_sub_preds}")
                 print(f"  Valid - Sub-Loss: {val_sub_loss} | {val_sub_preds}")
+                print(f"  Current LR: {optimizer.param_groups[0]['lr']:.6f}")
 
-                print(f"Train - sub labels loss: {sub_labels_loss_values}")
-
-                scheduler.step(val_acc)
+                if sub_labels_loss_values:
+                    print(f"Train - sub labels loss: {sub_labels_loss_values}")
                 
                 # Update log file
                 log_json["runs"][protocol_key]["steps"].append({
@@ -414,7 +458,6 @@ def train_and_evaluate():
                     },
                 })
 
-
                 if config["multi"]:
                     log_json["runs"][protocol_key]["steps"][-1]["train"]["sub_loss"] = train_sub_loss
                     log_json["runs"][protocol_key]["steps"][-1]["train"]["sub_acc"] = train_sub_preds
@@ -423,7 +466,7 @@ def train_and_evaluate():
 
                 with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
 
-                # Save best model
+                # Save best model - using a local path for wandb compatibility
                 if val_acc > best_acc:
                     best_acc = val_acc
                     best_results = f"Best Results (Epoch {epoch+1}) - Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}"
@@ -433,7 +476,8 @@ def train_and_evaluate():
                     report = classification_report(
                         val_labels.cpu().numpy(), 
                         val_preds.cpu().numpy(),
-                        target_names=["truth", "deception"]
+                        target_names=["truth", "deception"],
+                        zero_division=0  # Handle the UndefinedMetricWarning
                     )
                     
                     # Log best metrics to wandb as summary values
@@ -466,13 +510,17 @@ def train_and_evaluate():
                     # Just log the AUC score
                     wandb.run.summary["best_auc_score"] = val_auc
                     
-                    # Save model
-                    model_path = os.path.join(config["log_dir"], f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
-                    torch.save(model.state_dict(), model_path)
-                    print(f"New best model saved to {model_path}")
+                    # Save model to local directory for wandb compatibility
+                    local_model_path = os.path.join(local_model_dir, f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
+                    torch.save(model.state_dict(), local_model_path)
+                    print(f"New best model saved to {local_model_path}")
                     
-                    # Log the best model to wandb
-                    if wandb.run is not None: wandb.save(model_path)
+                    # Save a copy to the main log directory as well (but don't use with wandb.save)
+                    original_model_path = os.path.join(config["log_dir"], f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
+                    torch.save(model.state_dict(), original_model_path)
+                    
+                    # Log the model to wandb - using local path
+                    # wandb.save(local_model_path)  # Commented out - will be uncommented when best model is found
             
             # Log final results
             print("\nTraining completed.")
@@ -488,13 +536,13 @@ def train_and_evaluate():
                     zero_division=0  # Handle the UndefinedMetricWarning
                 )
                 
-                # Store the report as a text artifact
-                report_path = os.path.join(config["log_dir"], f"classification_report_{int(time.time())}.txt")
+                # Store the report as a text artifact within wandb directory
+                report_path = os.path.join(os.getcwd(), f"classification_report_{int(time.time())}.txt")
                 with open(report_path, 'w') as f:
                     f.write(report)
                 
                 # Log the report file
-                wandb.save(report_path)
+                # wandb.save(report_path)  # Commented out - will be uncommented when best model is found
                 
                 # Also log key metrics as summaries
                 wandb.run.summary["final_truth_f1"] = report_data["truth"]["f1-score"]
