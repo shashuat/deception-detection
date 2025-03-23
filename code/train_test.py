@@ -64,7 +64,7 @@ config = {
     }
 }
 
-def train_one_epoch(config, train_loader, model, optimizer, criterion, sub_loss, sub_labels_loss):
+def train_one_epoch(config, train_loader, model, optimizer, criterion, sub_loss, sub_labels_loss, scheduler=None):
     """Train model for one epoch"""
     model.train()
     epoch_loss = []
@@ -74,6 +74,7 @@ def train_one_epoch(config, train_loader, model, optimizer, criterion, sub_loss,
     epoch_subpreds = {}
     epoch_sub_labels_loss = []
     start_time = time.time()
+    grad_clip_value = 1.0  # Add gradient clipping to prevent unstable training
     
     for i, (train_data, labels, sub_labels) in enumerate(train_loader):
         # Prepare input
@@ -113,7 +114,16 @@ def train_one_epoch(config, train_loader, model, optimizer, criterion, sub_loss,
             
         # Backward pass
         loss.backward()
+        
+        # Apply gradient clipping to prevent large updates
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+        
+        # Update weights
         optimizer.step()
+        
+        # Update learning rate scheduler after each batch (if provided)
+        if scheduler is not None:
+            scheduler.step()
         
         # Track progress
         epoch_loss.append(loss.item())
@@ -217,11 +227,21 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
     between the initial lr set in the optimizer and 0, with a warmup period.
     """
     def lr_lambda(current_step):
+        # Fix progress calculation to ensure proper scheduling
+        current_step = min(current_step, num_training_steps)
+        
         if current_step < num_warmup_steps:
+            # Linear warmup phase
             return float(current_step) / float(max(1, num_warmup_steps))
+        
+        # Cosine annealing phase
         progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        # Ensure progress never exceeds 1.0 (which would cause LR to increase again)
+        progress = min(1.0, progress)
         cosine_decay = 0.5 * (1.0 + np.cos(np.pi * progress))
-        return max(min_lr, cosine_decay)
+        
+        # Scale learning rate between initial and min_lr
+        return max(min_lr / optimizer.param_groups[0]['lr'], cosine_decay)
     
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
 
@@ -345,18 +365,45 @@ def train_and_evaluate():
                 
             print(f"Model created: {model_name}")
             
-            # Create optimizer and loss function
-            optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"])
-            
-            # Improved LR scheduler: Cosine annealing with warmup
-            total_steps = config["num_epochs"] * len(train_loader)
-            warmup_steps = config["warmup_epochs"] * len(train_loader)
-            scheduler = get_cosine_schedule_with_warmup(
-                optimizer, 
-                num_warmup_steps=warmup_steps,
-                num_training_steps=total_steps,
-                min_lr=1e-6  # Minimum learning rate at the end of schedule
+            # Create optimizer and loss function with weight decay
+            optimizer = torch.optim.AdamW(
+                model.parameters(), 
+                lr=config["lr"],
+                weight_decay=config.get("weight_decay", 1e-5)  # Add weight decay to reduce overfitting
             )
+            
+            # Use PyTorch's built-in scheduler instead of custom implementation
+            from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+            
+            # Calculate steps for warmup and cosine annealing
+            warmup_steps = config["warmup_epochs"] * len(train_loader)
+            total_steps = config["num_epochs"] * len(train_loader)
+            
+            # Create warmup scheduler
+            warmup_scheduler = LinearLR(
+                optimizer, 
+                start_factor=0.1,  # Start at 10% of base learning rate
+                end_factor=1.0,    # End at 100% of base learning rate
+                total_iters=warmup_steps
+            )
+            
+            # Create cosine annealing scheduler for after warmup
+            cosine_scheduler = CosineAnnealingLR(
+                optimizer,
+                T_max=total_steps - warmup_steps,
+                eta_min=1e-6  # Minimum learning rate at the end of schedule
+            )
+            
+            # Combine the two schedulers
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_steps]
+            )
+            
+            # Add early stopping to prevent overfitting
+            early_stop_patience = 5  # Number of epochs to wait before stopping if no improvement
+            early_stop_counter = 0  # Counter for early stopping
             
             criterion = nn.CrossEntropyLoss()
             
@@ -388,7 +435,7 @@ def train_and_evaluate():
                 
                 # Train for one epoch
                 train_loss, train_preds, train_labels, train_sub_loss, train_sub_preds, sub_labels_loss_values = train_one_epoch(
-                    config, train_loader, model, optimizer, criterion, secondary_loss, sub_labels_loss
+                    config, train_loader, model, optimizer, criterion, secondary_loss, sub_labels_loss, scheduler
                 )
                 
                 # Calculate training metrics
@@ -432,8 +479,8 @@ def train_and_evaluate():
                     "learning_rate": optimizer.param_groups[0]['lr']
                 })
                 
-                # Update scheduler at each step
-                scheduler.step()
+                # Move scheduler.step() to the batch loop for proper step counting
+                # We'll add a new batch level scheduler.step() in the train_one_epoch function
                 
                 # Print results
                 print(f"Epoch {epoch+1} Results:")
@@ -442,6 +489,10 @@ def train_and_evaluate():
                 print(f"  Train - Sub-Loss: {train_sub_loss} | {train_sub_preds}")
                 print(f"  Valid - Sub-Loss: {val_sub_loss} | {val_sub_preds}")
                 print(f"  Current LR: {optimizer.param_groups[0]['lr']:.6f}")
+                
+                # Monitor if we're at the best epoch so far
+                if epoch+1 == best_results_epoch:
+                    print(f"  ✓ New best model (epoch {epoch+1})!")
 
                 if sub_labels_loss_values:
                     print(f"Train - sub labels loss: {sub_labels_loss_values}")
@@ -471,6 +522,18 @@ def train_and_evaluate():
                     best_acc = val_acc
                     best_results = f"Best Results (Epoch {epoch+1}) - Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}"
                     best_results_epoch = epoch+1
+                    
+                    # Reset early stopping counter
+                    early_stop_counter = 0
+                else:
+                    # Increment early stopping counter if validation accuracy doesn't improve
+                    early_stop_counter += 1
+                    print(f"Early stopping counter: {early_stop_counter}/{early_stop_patience}")
+                    
+                    if early_stop_counter >= early_stop_patience:
+                        print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
+                        print(f"Stopping at epoch {epoch+1}. Best results were at epoch {best_results_epoch}.")
+                        break
                     
                     # Generate classification report
                     report = classification_report(
