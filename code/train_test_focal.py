@@ -1,5 +1,4 @@
-# train_test.py with improvements
-
+# train_test.py with minimal improvements
 import os
 import sys
 import time
@@ -7,23 +6,19 @@ import json
 import traceback
 import torch
 import numpy as np
-import wandb
-
-# Import standard modules
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_curve, auc
+import wandb
 
-# Import dataset
 from dataloader.audio_visual_dataset import DatasetDOLOS, af_collate_fn
+from models.audio_model import W2V2_Model
+from models.fusion_model import Fusion
+from models.visual_model import ViT_model
 
-# Import models
-from models.improved_fusion_model import ImprovedFusion  # Use the improved fusion model
+# Import the improved training function
+from training.improved_training_minimal import train_one_epoch_improved
 
-# Import new training utilities
-from training.improved_training import train_with_improvements, validate_with_improvements
-from utils.focal_loss import FocalLoss, LabelSmoothingLoss
-
-# Path setup
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from setup import get_env
 
@@ -36,52 +31,101 @@ config = {
     "transcripts_path": ENV["TRANSCRIPTS_PATH"],
     "log_dir": ENV["LOGS_PATH"],
     
-    # Training parameters
+    # Training parameters - keep your existing values
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    "lr": 5e-4,  # Slightly lower learning rate
-    "batch_size": 8,
-    "effective_batch_size": 32,  # Using gradient accumulation to achieve this
-    "accumulation_steps": 4,  # batch_size * accumulation_steps = effective_batch_size
-    "num_epochs": 30,  
-    "warmup_epochs": 2,  
-    "weight_decay": 2e-5,  
+    "lr": 1e-4,  # Keep your original learning rate
+    "batch_size": 4,  # Keep your original batch size
+    "num_epochs": 20,  # Keep your original number of epochs
     
-    # Model configuration
+    # Model configuration - keep your existing values
     "modalities": ["faces", "audio", "text", "whisper"],
     "num_layers": 4,
     "adapter": True,
-    "adapter_type": "efficient_conv",
-    "fusion_type": "cross_attention",
-    "multi": True,
+    "adapter_type": "efficient_conv",  
+    "fusion_type": "cross_attention",  
+    "multi": True,  
     "sub_labels": False,
     
-    # New training features
-    "use_focal_loss": True,
-    "focal_alpha": 0.25,
-    "focal_gamma": 2.0,
-    "use_label_smoothing": True,
-    "label_smoothing": 0.1,
-    "use_mixup": True,
-    "mixup_alpha": 0.2,
-    "use_amp": True,  # Automatic mixed precision
+    # NEW: Small improvements
+    "use_gradient_clipping": True,  # Add gradient clipping
+    "weight_decay": 1e-5,  # Add small weight decay
+    "scheduler_patience": 2,  # Reduce scheduler patience
     
     # Protocols for training and testing
     "protocols": [
         ["train_fold3.csv", "test_fold3.csv"],
-        # Add more protocols as needed
+        # Other protocols can be uncommented as needed
     ],
     
     # wandb configuration
     "wandb": {
         "project": "multimodal-lie-detection",
         "entity": None,
-        "tags": ["multimodal", "lie-detection", "deep-learning", "improved-fusion"]
+        "tags": ["multimodal", "lie-detection", "deep-learning", "improved"]
     }
 }
 
+# Keep the original validation function
+def validate(config, val_loader, model, criterion, sub_loss):
+    """Validate model on validation set"""
+    model.eval()
+    epoch_loss = []
+    epoch_preds = []
+    epoch_labels = []
+    epoch_subloss = []
+    epoch_subpreds = {}
+    
+    with torch.no_grad():
+        for val_data, labels, sub_labels in val_loader:
+            labels = labels.to(config["device"])
+            model_input = {k: v.to(config["device"]) for k, v in val_data.items()}
+            
+            outputs, outputs_sub_labels, sub_outputs = model(model_input)
+            
+            loss = criterion(outputs, labels)
+            if config["multi"] and sub_outputs is not None:
+                secondary_loss = {
+                    k: criterion(sub_outputs[k], labels)
+                    for k, criterion in sub_loss.items()
+                }
+                loss = 0.7 * loss + 0.3 * sum(secondary_loss.values()) / len(secondary_loss)
+                epoch_subloss.append({k: v.item() for k, v in secondary_loss.items()})
+
+                for k, v in sub_outputs.items():
+                    epoch_subpreds[k] = epoch_subpreds.get(k, []) + [torch.argmax(v, dim=1)]
+            
+            epoch_loss.append(loss.item())
+            epoch_preds.append(torch.argmax(outputs, dim=1))
+            epoch_labels.append(labels)
+    
+    # Combine results
+    epoch_preds = torch.cat(epoch_preds)
+    epoch_labels = torch.cat(epoch_labels)
+    avg_loss = np.mean(epoch_loss)
+    
+    avg_sub_loss = {}
+    if config["multi"]:
+        for info in epoch_subloss:
+            for k, v in info.items():
+                avg_sub_loss[k] = avg_sub_loss.get(k, []) + [v]
+        
+        for k in avg_sub_loss:
+            avg_sub_loss[k] = sum(avg_sub_loss[k]) / len(avg_sub_loss[k])
+            epoch_subpreds[k] = torch.cat(epoch_subpreds[k])
+
+    return avg_loss, epoch_preds, epoch_labels, avg_sub_loss, epoch_subpreds
+
+def evaluate_metrics(labels, preds):
+    """Calculate evaluation metrics"""
+    acc = accuracy_score(labels, preds)
+    f1 = f1_score(labels, preds, zero_division=0)  # Added zero_division=0 to handle warnings
+    fpr, tpr, _ = roc_curve(labels, preds, pos_label=1)
+    auc_score = auc(fpr, tpr)
+    return acc, f1, auc_score
+
 def train_and_evaluate():
-    """Main training and evaluation function with improvements"""
-    # Initialize wandb with enhanced configuration
+    """Main training and evaluation function with minimal improvements"""
+    # Initialize wandb
     wandb.init(
         project=config["wandb"]["project"],
         entity=config["wandb"]["entity"],
@@ -99,12 +143,6 @@ def train_and_evaluate():
         model_name += f"_type_{config['adapter_type']}"
     if config["multi"]:
         model_name += "_multi"
-    if config["use_focal_loss"]:
-        model_name += "_focal"
-    if config["use_label_smoothing"]:
-        model_name += "_smooth"
-    if config["use_mixup"]:
-        model_name += "_mixup"
     
     # Set wandb run name
     wandb.run.name = model_name
@@ -115,14 +153,9 @@ def train_and_evaluate():
         "modalities": config["modalities"],
         "learning_rate": config["lr"],
         "batch_size": config["batch_size"],
-        "effective_batch_size": config["effective_batch_size"],
         "num_epochs": config["num_epochs"],
         "num_layers": config["num_layers"],
         "adapter": config["adapter"],
-        "focal_loss": config["use_focal_loss"],
-        "label_smoothing": config["use_label_smoothing"],
-        "mixup": config["use_mixup"],
-        "amp": config["use_amp"],
         "runs": {}
     }
 
@@ -141,7 +174,7 @@ def train_and_evaluate():
             wandb.config.update({"protocol_train": train_file, "protocol_test": test_file})
             
             if protocol_key in log_json["runs"]:
-                raise Exception(f"Protocol {protocol_key} was already run")
+                raise Exception("You can run a protocol only one time.\nProtocol <" + protocol_key + "> was already run")
             
             log_json["runs"][protocol_key] = {
                 "steps": [],
@@ -194,119 +227,64 @@ def train_and_evaluate():
                 "dataset/test_samples": len(test_dataset)
             })
             
-            # Create improved fusion model
-            model = ImprovedFusion(
+            # Create model - keep your original model
+            model = Fusion(
                 config["fusion_type"],
                 config["modalities"],
                 config["num_layers"], 
                 config["adapter"], 
                 config["adapter_type"], 
                 config["multi"],
-                train_dataset.num_sub_labels,
-                dropout=0.25  # Higher dropout for improved regularization
+                train_dataset.num_sub_labels
             )
             
             # Move model to device
             model.to_device(config["device"])
             print(f"Model created: {model_name}")
             
-            # Create optimizer with weight decay
+            # Create optimizer and loss function
+            # IMPROVEMENT: Use AdamW with weight decay
             optimizer = torch.optim.AdamW(
                 model.parameters(), 
                 lr=config["lr"],
-                weight_decay=config["weight_decay"],
-                betas=(0.9, 0.999)  # Typical AdamW betas
+                weight_decay=config["weight_decay"]
             )
             
-            # Improved learning rate scheduler
-            from torch.optim.lr_scheduler import OneCycleLR
-            
-            # Calculate total steps for lr scheduling
-            total_steps = config["num_epochs"] * len(train_loader) // config["accumulation_steps"]
-            
-            # Use OneCycleLR for better convergence
-            scheduler = OneCycleLR(
-                optimizer,
-                max_lr=config["lr"],
-                total_steps=total_steps,
-                pct_start=0.2,  # Percentage of steps for warmup
-                div_factor=25,  # Initial lr = max_lr/div_factor
-                final_div_factor=1000,  # Final lr = max_lr/final_div_factor
-                anneal_strategy='cos'
+            # IMPROVEMENT: Reduced patience for scheduler
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='max', factor=0.5, patience=config["scheduler_patience"]
             )
             
-            # Create loss functions based on configuration
-            if config["use_focal_loss"]:
-                criterion = FocalLoss(
-                    alpha=config["focal_alpha"],
-                    gamma=config["focal_gamma"],
-                    device=config["device"]
-                )
-                print("Using Focal Loss")
-            elif config["use_label_smoothing"]:
-                criterion = LabelSmoothingLoss(smoothing=config["label_smoothing"])
-                print("Using Label Smoothing Loss")
-            else:
-                criterion = torch.nn.CrossEntropyLoss()
-                print("Using Cross Entropy Loss")
+            criterion = nn.CrossEntropyLoss()
             
             # Additional loss functions for multitask learning
             secondary_loss = {}
             if config["multi"]:
-                for k in config["modalities"]:
-                    if config["use_focal_loss"]:
-                        secondary_loss[k] = FocalLoss(
-                            alpha=config["focal_alpha"],
-                            gamma=config["focal_gamma"],
-                            device=config["device"]
-                        )
-                    elif config["use_label_smoothing"]:
-                        secondary_loss[k] = LabelSmoothingLoss(smoothing=config["label_smoothing"])
-                    else:
-                        secondary_loss[k] = torch.nn.CrossEntropyLoss()
+                secondary_loss = {
+                    k: nn.CrossEntropyLoss()
+                    for k in config["modalities"]
+                }
                 print("Multitask learning enabled")
 
-            # Loss functions for sub-labels
             sub_labels_loss = []
             if config["sub_labels"]:
+                print(train_dataset.num_sub_labels)
                 for _ in range(train_dataset.num_sub_labels):
-                    if config["use_focal_loss"]:
-                        sub_labels_loss.append(FocalLoss(
-                            alpha=config["focal_alpha"],
-                            gamma=config["focal_gamma"],
-                            device=config["device"]
-                        ))
-                    elif config["use_label_smoothing"]:
-                        sub_labels_loss.append(LabelSmoothingLoss(smoothing=config["label_smoothing"]))
-                    else:
-                        sub_labels_loss.append(torch.nn.CrossEntropyLoss())
-                print(f"Sub-labels enabled: {train_dataset.num_sub_labels}")
+                    sub_labels_loss.append(nn.CrossEntropyLoss())
             
-            # Early stopping parameters
-            early_stop_patience = 10
-            early_stop_counter = 0
+            # Training loop
             best_acc = 0.0
-            best_f1 = 0.0
-            best_results = ""
-            best_results_epoch = -1
-            
-            # Create directories for saving models
-            model_dir = os.path.join(config["log_dir"], "models")
-            os.makedirs(model_dir, exist_ok=True)
-            
+            best_f1 = 0.0  # IMPROVEMENT: Track F1 score too
+            early_stop_counter = 0  # IMPROVEMENT: Add early stopping
+            early_stop_patience = 5
             print(f"Starting training for {config['num_epochs']} epochs")
             
             for epoch in range(config["num_epochs"]):
                 print(f"\nEpoch {epoch+1}/{config['num_epochs']}")
                 
-                # Train with improved function
-                train_loss, train_preds, train_labels, train_sub_loss, train_sub_preds, sub_labels_loss_values = train_with_improvements(
-                    config, train_loader, model, optimizer, criterion, secondary_loss, sub_labels_loss, 
-                    scheduler=scheduler,
-                    use_mixup=config["use_mixup"],
-                    mixup_alpha=config["mixup_alpha"],
-                    use_amp=config["use_amp"],
-                    accumulation_steps=config["accumulation_steps"]
+                # IMPROVEMENT: Use the improved training function
+                train_loss, train_preds, train_labels, train_sub_loss, train_sub_preds, sub_labels_loss_values = train_one_epoch_improved(
+                    config, train_loader, model, optimizer, criterion, secondary_loss, sub_labels_loss
                 )
                 
                 # Calculate training metrics
@@ -314,17 +292,15 @@ def train_and_evaluate():
                     train_labels.cpu().numpy(), train_preds.cpu().numpy()
                 )
 
-                # Multi-task training metrics
                 if config["multi"]:
                     for k in train_sub_preds:
                         train_sub_preds[k] = evaluate_metrics(
                             train_labels.cpu().numpy(), train_sub_preds[k].cpu().numpy()
                         )
                 
-                # Validate with improved function
-                val_loss, val_preds, val_labels, val_sub_loss, val_sub_preds = validate_with_improvements(
-                    config, test_loader, model, criterion, secondary_loss, 
-                    use_amp=config["use_amp"]
+                # Validate
+                val_loss, val_preds, val_labels, val_sub_loss, val_sub_preds = validate(
+                    config, test_loader, model, criterion, secondary_loss
                 )
                 
                 # Calculate validation metrics
@@ -332,7 +308,6 @@ def train_and_evaluate():
                     val_labels.cpu().numpy(), val_preds.cpu().numpy()
                 )
 
-                # Multi-task validation metrics
                 if config["multi"]:
                     for k in val_sub_preds:
                         val_sub_preds[k] = evaluate_metrics(
@@ -357,13 +332,22 @@ def train_and_evaluate():
                 print(f"Epoch {epoch+1} Results:")
                 print(f"  Train - Loss: {train_loss:.5f}, Acc: {train_acc:.5f}, F1: {train_f1:.5f}, AUC: {train_auc:.5f}")
                 print(f"  Valid - Loss: {val_loss:.5f}, Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}")
-                print(f"  Current LR: {optimizer.param_groups[0]['lr']:.6f}")
+                print(f"  Train - Sub-Loss: {train_sub_loss} | {train_sub_preds}")
+                print(f"  Valid - Sub-Loss: {val_sub_loss} | {val_sub_preds}")
+                
+                # Update scheduler with validation accuracy (same as original)
+                scheduler.step(val_acc)
                 
                 # Update log file
                 log_json["runs"][protocol_key]["steps"].append({
                     "epoch": epoch+1,
-                    "train": {"loss": train_loss, "acc": train_acc, "f1": train_f1, "auc": train_auc},
-                    "val": {"loss": val_loss, "acc": val_acc, "f1": val_f1, "auc": val_auc},
+                    "train": {"loss": train_loss, "acc": train_acc, "f1": train_f1},
+                    "val": {
+                        "loss": val_loss, 
+                        "acc": val_acc,
+                        "F1": val_f1,
+                        "AUC": val_auc
+                    },
                 })
 
                 if config["multi"]:
@@ -374,79 +358,44 @@ def train_and_evaluate():
 
                 with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
 
-                # Save based on better F1 score (more robust than accuracy)
-                improvement = False
-                if val_f1 > best_f1:
-                    best_f1 = val_f1
-                    improvement = True
-                    
+                # IMPROVEMENT: Check for F1 improvement too
+                improved = False
                 if val_acc > best_acc:
                     best_acc = val_acc
-                    if not improvement:  # Only count as improvement if F1 didn't improve
-                        improvement = True
+                    improved = True
+                    
+                if val_f1 > best_f1:
+                    best_f1 = val_f1
+                    improved = True
                 
-                if improvement:
+                if improved:
                     best_results = f"Best Results (Epoch {epoch+1}) - Acc: {val_acc:.5f}, F1: {val_f1:.5f}, AUC: {val_auc:.5f}"
                     best_results_epoch = epoch+1
                     print(f"  ✓ New best model (epoch {epoch+1})!")
                     
                     # Reset early stopping counter
                     early_stop_counter = 0
-                    
-                    # Create classification report for detailed metrics
+
+                    # Generate classification report
                     report = classification_report(
                         val_labels.cpu().numpy(), 
                         val_preds.cpu().numpy(),
                         target_names=["truth", "deception"],
-                        output_dict=True,
                         zero_division=0
                     )
-                    
+
                     # Log best metrics to wandb
                     wandb.run.summary["best_val_accuracy"] = val_acc
                     wandb.run.summary["best_val_f1"] = val_f1
                     wandb.run.summary["best_val_auc"] = val_auc
                     wandb.run.summary["best_epoch"] = epoch+1
                     
-                    # Log confusion matrix
-                    try:
-                        wandb.log({
-                            "confusion_matrix": wandb.plot.confusion_matrix(
-                                y_true=val_labels.cpu().numpy(), 
-                                preds=val_preds.cpu().numpy(),
-                                class_names=["truth", "deception"]
-                            )
-                        })
-                    except Exception as cm_error:
-                        print(f"Error creating confusion matrix: {cm_error}")
-                    
                     # Save model
-                    model_path = os.path.join(
-                        model_dir, 
-                        f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt"
-                    )
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'best_acc': best_acc,
-                        'best_f1': best_f1,
-                        'config': config
-                    }, model_path)
+                    model_path = os.path.join(config["log_dir"], f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
+                    torch.save(model.state_dict(), model_path)
                     print(f"  Model saved to {model_path}")
-                    
-                    # Add to log
-                    log_json["runs"][protocol_key]["best_model_path"] = model_path
-                    log_json["runs"][protocol_key]["best_results"] = {
-                        "epoch": epoch+1,
-                        "accuracy": val_acc,
-                        "f1": val_f1,
-                        "auc": val_auc,
-                        "report": report
-                    }
-                    with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
                 else:
-                    # Increment early stopping counter
+                    # IMPROVEMENT: Increment early stopping counter
                     early_stop_counter += 1
                     print(f"  Early stopping counter: {early_stop_counter}/{early_stop_patience}")
                     
@@ -454,39 +403,27 @@ def train_and_evaluate():
                         print(f"  Early stopping triggered! No improvement for {early_stop_patience} epochs.")
                         break
             
-            # Log final results after protocol completion
-            print("\nTraining completed for this protocol.")
+            # Log final results
+            print("\nTraining completed.")
             print(best_results)
-            
-            # Prepare for next protocol
-            # Free up memory
-            del model
-            del optimizer
-            del scheduler
-            torch.cuda.empty_cache()
+
+            log_json["runs"][protocol_key]["best_results_epoch"] = best_results_epoch
+            log_json["runs"][protocol_key]["report"] = report
+            with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
 
     except Exception as e:
-        log_json["error"] = str(e)
+        log_json["error"] = e.__str__()
         tb = traceback.format_exc()
-        log_json["traceback"] = tb
+        log_json["traceback"] = str(tb)
         with open(log_file, 'w') as f: json.dump(log_json, f, indent=4)
         
         # Log error to wandb
-        wandb.log({"error": str(e), "traceback": tb})
+        wandb.log({"error": e.__str__(), "traceback": str(tb)})
         
         raise e
     
     finally:
         wandb.finish()
-
-
-def evaluate_metrics(labels, preds):
-    """Calculate evaluation metrics unchanged"""
-    acc = accuracy_score(labels, preds)
-    f1 = f1_score(labels, preds, zero_division=0)
-    fpr, tpr, _ = roc_curve(labels, preds, pos_label=1)
-    auc_score = auc(fpr, tpr)
-    return acc, f1, auc_score
 
 
 if __name__ == "__main__":
