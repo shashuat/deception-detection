@@ -16,5 +16,6 @@ data
 /config.py
 
 wandb
+wandb_models
 
 .env

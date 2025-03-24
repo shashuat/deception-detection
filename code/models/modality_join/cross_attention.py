@@ -59,6 +59,7 @@ class CrossModalAttentionFusion(nn.Module):
         self.pre_norms = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(num_modalities)])
         self.concat_norm = nn.LayerNorm(embed_dim)
         self.post_norm = nn.LayerNorm(embed_dim)
+        self.concat_norm = nn.LayerNorm(embed_dim)
 
         self.attn_blocks = nn.ModuleList([
             nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
@@ -85,6 +86,7 @@ class CrossModalAttentionFusion(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(transformer_layers, num_layers=num_layers)
         self.seq_length = seq_length
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, latent_list):
         """
@@ -100,13 +102,15 @@ class CrossModalAttentionFusion(nn.Module):
         # Add modality-specific embeddings and pre-normalize.
         for i, x in enumerate(latent_list):
             mod_embed = self.modality_embeddings[i].unsqueeze(0).unsqueeze(1).expand(B, seq, self.embed_dim)
-            if x.size(1) != self.seq_length:
-                raise Exception(f"Invalid seq length - modality {i}: {x.size()}")
             x = x + mod_embed
+            current_length = x.size(1)
+            if current_length != 64:
+                raise Exception(f"Invalid seq length - #{i} modality - {x.size()}")
             x = self.pre_norms[i](x)
+            x = self.dropout(x)
             modality_outputs.append(x)
             
-        # Concatenate latent tokens from all modalities along the sequence dimension for context.
+        # Concatenate latent tokens from all modalities along the sequence dimension.
         # Shape: (B, seq * num_modalities, embed_dim)
         all_latents = torch.cat(modality_outputs, dim=1)
         all_latents = self.concat_norm(all_latents)
@@ -115,9 +119,11 @@ class CrossModalAttentionFusion(nn.Module):
         fused_modalities = []
         for i, x in enumerate(modality_outputs):
             attn_out, _ = self.attn_blocks[i](query=x, key=all_latents, value=all_latents)
-            gate_input = x.mean(dim=1)  # (B, embed_dim)
-            gate_weight = torch.sigmoid(self.gate_layer[i](gate_input))  # (B, 1)
-            attn_out = gate_weight.unsqueeze(1) * attn_out
+            
+            gate_input = x.mean(dim=1)  # shape: (B, embed_dim)
+            gate_weight = torch.sigmoid(self.gate_layer[i](gate_input))  # shape: (B, 1)
+            attn_out = gate_weight.unsqueeze(1) * attn_out + (1 - gate_weight.unsqueeze(1)) * x
+
             fused_modalities.append(attn_out)
         
         # Instead of concatenation along the token dimension, use low-rank tensor fusion.

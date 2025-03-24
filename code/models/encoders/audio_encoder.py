@@ -71,7 +71,7 @@ class WavEncoder(nn.Module):
             yield x
 
 class WhisperTokenEncoder(nn.Module):
-    def __init__(self, embedding_dim, num_layers, num_heads, hidden_dim, vocab_size=51866, dropout=0.15):
+    def __init__(self, embedding_dim, num_layers, num_heads, hidden_dim, vocab_size=51866, dropout=0.2):
         """
         Transformer-based encoder for Whisper tokens.
 
@@ -90,6 +90,7 @@ class WhisperTokenEncoder(nn.Module):
         # downsample from 256 to 64 (seq length)
         self.seq_projection = nn.Linear(256, 64)
 
+        self.dropout = nn.Dropout(dropout)
 
         self.pos_embedding = nn.Parameter(torch.randn(1, 64, embedding_dim))  # (1, 64, embedding_dim)
         self.layer_norm = nn.LayerNorm(embedding_dim)
@@ -123,6 +124,7 @@ class WhisperTokenEncoder(nn.Module):
         x += self.pos_embedding # (batch, seq, embed)
 
         x = self.layer_norm(x)
+        x = self.dropout(x)
         if return_all_layers:
             return self._layer_generator(x)
 

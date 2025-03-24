@@ -19,7 +19,19 @@ from models.visual_model import ViT_model
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from setup import get_env
 
-torch.seed()
+import random
+import numpy as np
+
+def set_seed(seed: int):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # For multi-GPU
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False  # Can slow down performance
+
+set_seed(1)
 
 ENV = get_env()
 config = {
@@ -33,12 +45,12 @@ config = {
     # Training parameters
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     "lr": 1e-4,
-    "batch_size": 10,
-    "num_epochs": 1,
+    "batch_size": 12,
+    "num_epochs": 20,
     "warmup_epochs": 1,  # warmup epochs for scheduler
 
     # Model configuration
-    "modalities": ["faces", "audio", "whisper", "text"],
+    "modalities": ["faces", "whisper"],
     "num_layers": 4,
     "adapter": True,
     "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
@@ -260,6 +272,8 @@ def train_and_evaluate():
     
     # Create log directory
     os.makedirs(config["log_dir"], exist_ok=True)
+
+    best_results_epoch = 0
     
     # Create model name
     model_name = f"DOLOS_layers_{config['num_layers']}_Adapter_{config['adapter']}"
@@ -497,12 +511,7 @@ def train_and_evaluate():
                 print(f"  Valid - Sub-Loss: {val_sub_loss} | {val_sub_preds}")
                 print(f"  Current LR: {optimizer.param_groups[0]['lr']:.6f}")
                 
-                # Monitor if we're at the best epoch so far
-                if epoch+1 == best_results_epoch:
-                    print(f"  ✓ New best model (epoch {epoch+1})!")
-
-                if sub_labels_loss_values:
-                    print(f"Train - sub labels loss: {sub_labels_loss_values}")
+                
                 
                 # Update log file
                 log_json["runs"][protocol_key]["steps"].append({
@@ -531,16 +540,16 @@ def train_and_evaluate():
                     best_results_epoch = epoch+1
                     
                     # Reset early stopping counter
-                    early_stop_counter = 0
-                else:
-                    # Increment early stopping counter if validation accuracy doesn't improve
-                    early_stop_counter += 1
-                    print(f"Early stopping counter: {early_stop_counter}/{early_stop_patience}")
+                #     early_stop_counter = 0
+                # else:
+                    # # Increment early stopping counter if validation accuracy doesn't improve
+                    # early_stop_counter += 1
+                    # print(f"Early stopping counter: {early_stop_counter}/{early_stop_patience}")
                     
-                    if early_stop_counter >= early_stop_patience:
-                        print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
-                        print(f"Stopping at epoch {epoch+1}. Best results were at epoch {best_results_epoch}.")
-                        break
+                    # if early_stop_counter >= early_stop_patience:
+                    #     print(f"Early stopping triggered! No improvement for {early_stop_patience} epochs.")
+                    #     print(f"Stopping at epoch {epoch+1}. Best results were at epoch {best_results_epoch}.")
+                    #     break
                     
                     # Generate classification report
                     report = classification_report(
@@ -588,7 +597,14 @@ def train_and_evaluate():
                     # Log the best model to wandb
                     try: wandb.save(local_model_path) 
                     except: pass # not sync to wandb ?
-            
+
+                # Monitor if we're at the best epoch so far
+                if epoch+1 == best_results_epoch:
+                    print(f"  ✓ New best model (epoch {epoch+1})!")
+
+                if sub_labels_loss_values:
+                    print(f"Train - sub labels loss: {sub_labels_loss_values}")
+
             # Log final results
             print("\nTraining completed.")
             print(best_results)
