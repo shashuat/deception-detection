@@ -34,7 +34,7 @@ config = {
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     "lr": 1e-4,
     "batch_size": 10,
-    "num_epochs": 20,
+    "num_epochs": 1,
     "warmup_epochs": 1,  # warmup epochs for scheduler
 
     # Model configuration
@@ -374,13 +374,15 @@ def train_and_evaluate():
                 weight_decay=config.get("weight_decay", 1e-5)  # Add weight decay to reduce overfitting
             )
             
-            # Use PyTorch's built-in scheduler instead of custom implementation
             from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
             
             # Calculate steps for warmup and cosine annealing
             warmup_steps = config["warmup_epochs"] * len(train_loader)
             total_steps = config["num_epochs"] * len(train_loader)
-            
+
+            # Ensure T_max is at least 1 to avoid division by zero
+            cosine_steps = max(1, total_steps - warmup_steps)
+
             # Create warmup scheduler
             warmup_scheduler = LinearLR(
                 optimizer, 
@@ -388,14 +390,14 @@ def train_and_evaluate():
                 end_factor=1.0,    # End at 100% of base learning rate
                 total_iters=warmup_steps
             )
-            
+
             # Create cosine annealing scheduler for after warmup
             cosine_scheduler = CosineAnnealingLR(
                 optimizer,
-                T_max=total_steps - warmup_steps,
+                T_max=cosine_steps,  # Using cosine_steps instead of total_steps - warmup_steps
                 eta_min=1e-6  # Minimum learning rate at the end of schedule
             )
-            
+
             # Combine the two schedulers
             scheduler = SequentialLR(
                 optimizer,
@@ -426,8 +428,11 @@ def train_and_evaluate():
             
             # Training loop
             best_acc = 0.0
+            best_results_epoch = 0  
+            best_results = ""      
             print(f"Starting training for {config['num_epochs']} epochs")
-            
+            report = ""      
+
             # Create a local directory for saving models
             local_model_dir = os.path.join(os.getcwd(), "wandb_models")
             os.makedirs(local_model_dir, exist_ok=True)
