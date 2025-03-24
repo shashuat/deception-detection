@@ -44,7 +44,7 @@ config = {
     
     # Training parameters
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    "lr": 1e-4,
+    "lr": 1e-3,
     "batch_size": 12,
     "num_epochs": 20,
     "warmup_epochs": 1,  # warmup epochs for scheduler
@@ -55,7 +55,7 @@ config = {
     "adapter": True,
     "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
     "fusion_type": "cross_attention",  # Options: "concat", "cross2", "cross_attention"
-    "multi": False,  # Use multitask learning
+    "multi": True,  # Use multitask learning
     "sub_labels": False, # Use sub labels (smile, cry, etc.)
     
     # Protocols for training and testing

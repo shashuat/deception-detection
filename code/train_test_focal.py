@@ -38,7 +38,7 @@ config = {
     "num_epochs": 20,  # Keep your original number of epochs
     
     # Model configuration - keep your existing values
-    "modalities": ["faces", "audio", "text", "whisper"],
+    "modalities": ["faces", "whisper"],
     "num_layers": 4,
     "adapter": True,
     "adapter_type": "efficient_conv",  

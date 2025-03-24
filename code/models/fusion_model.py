@@ -17,32 +17,35 @@ ENCODER_SEQ_LENGTH = 256
 class MultiTaskClassifier(nn.Module):
     def __init__(self, encoder_dim, num_sub_labels):
         super(MultiTaskClassifier, self).__init__()
-        # Shared backbone layers
         self.shared_layers = nn.Sequential(
             nn.Linear(encoder_dim, encoder_dim // 2),
             nn.LayerNorm(encoder_dim // 2),
             nn.ReLU(),
-            nn.Dropout(p=0.15),
+            nn.Dropout(0.15),
 
             nn.Linear(encoder_dim // 2, encoder_dim // 4),
             nn.LayerNorm(encoder_dim // 4),
             nn.ReLU(),
-            nn.Dropout(p=0.15),
+            nn.Dropout(0.15),
         )
-
-        # Main classification head (fusion output)
         self.main_head = nn.Linear(encoder_dim // 4, 2)
-        
-        # Additional sub-class heads (each outputs 2 classes: Yes/No)
         self.sub_heads = nn.ModuleList([nn.Linear(encoder_dim // 4, 2) for _ in range(num_sub_labels)])
-
-        
+    
     def forward(self, x):
-        # x is the fused representation from all modality encoders
-        features = self.shared_layers(x)
-        sub_outs = torch.stack([torch.mean(head(features), dim=1) for head in self.sub_heads])
+        # x shape: (B, seq, encoder_dim)
+        # Pool out the seq dimension if you only need a single vector representation
+        x = x.mean(dim=1)   # (B, encoder_dim)
+        x = self.shared_layers(x)  # (B, encoder_dim // 4)
 
-        main_out = torch.mean(self.main_head(features), dim=1)
+        main_out = self.main_head(x)  # (B, 2)
+
+        # Produce sub-label outputs as (B, num_sub_labels, 2)
+        sub_outs = []
+        for head in self.sub_heads:
+            sub_out = head(x)  # (B, 2)
+            sub_outs.append(sub_out)
+        sub_outs = torch.stack(sub_outs, dim=1)  # (B, num_sub_labels, 2)
+
         return main_out, sub_outs
 
 class Fusion(nn.Module):
@@ -95,8 +98,8 @@ class Fusion(nn.Module):
             )
         
         elif self.fusion_type == "cross_attention":
-            self.cross_attention = CrossModalAttentionFusion(ENCODER_DIM, 12, num_modalities=len(modalities), num_layers=num_layers, dropout=0.2)
-            self.classifier = MultiTaskClassifier(ENCODER_DIM, num_sub_labels)
+            self.cross_attention = CrossModalAttentionFusion(ENCODER_DIM, 12, num_modalities=len(modalities), num_layers=num_layers, dropout=0.1)
+            self.classifier = MultiTaskClassifier(ENCODER_DIM*len(modalities), num_sub_labels)
 
         self.multi_classifier = {}
         if self.multi:
