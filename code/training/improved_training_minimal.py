@@ -1,5 +1,7 @@
 import torch
 import time
+import numpy as np
+
 # Small improvements to the training function with minimal changes
 def train_one_epoch_improved(config, train_loader, model, optimizer, criterion, sub_loss, sub_labels_loss, scheduler=None):
     """Train model for one epoch with minimal but effective improvements"""
