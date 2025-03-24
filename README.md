@@ -1,17 +1,21 @@
 ## Install Instructions
 
-Download and unzip `DOLOS.zip`
+### Download the data
+- Download and unzip `DOLOS.zip`
 
-Download and unzip `data.zip`to avoid to recompute all data processing (~7GB of data)
+- Download and unzip `data.zip` to avoid to recompute all data processing (~7GB of data)
 
+You can find the data [on this drive](https://drive.google.com/drive/u/0/folders/1XhxA_14jRser0CqYQUU7-VxpCErioTOC)
+
+### Setup python environment
+- Download requirements
 ```bash
 pip install -r requirements.txt
 ```
-i did pip freeze > requirements_new.txt (15/03, 12:30 this works)
 
-Create `config.py` if needed to indicate where to find DOLOS (`DOLOS_PATH`) and data (`DATA_PATH`)
+- Create `config.py` if needed to indicate where to find DOLOS (`DOLOS_PATH`) and data (`DATA_PATH`)
 
-run `setup.py` to check the setup
+- Run `setup.py` to check the setup
 
 ## Dataset Preprocessing
 run `YT_video_downloader2.py` to get video chunks in `code/data_preprocess/data/downloaded`
@@ -55,7 +59,6 @@ Finally, you should have such a data directory structure
 ## Code directory
 ```
 /code
-├── archive/          # unused random codes
 ├── data_preprocess/  # downloading data, frame
 ├── dataloader/       # contains the torch dataset class
 ├── models/           # torch model
@@ -70,29 +73,10 @@ make an `.env` file with `WANDB_TOKEN=e58e...` and login is handled in the __ini
 
 1. Configure the model in `train_test.py` by modifying the `config` dictionary if needed
 
+2. Run this command from `~/code` to train the model
 ```bash
 python -m train_test
 ```
-
-## Available Models
-
-### Audio-Only Model
-Uses Wav2Vec2 with a classification head for audio-only deception detection.
-
-### Visual-Only Model
-Uses a CNN feature extractor followed by a Vision Transformer with a classification head.
-
-### Multimodal Fusion Model
-Combines audio and visual features using different fusion strategies:
-- `concat`: Simple concatenation of features
-- `cross2`: Cross-modal attention-based fusion
-
-## Parameter-Efficient Fine-Tuning
-
-The implementation supports two types of adapters:
-- `nlp`: Traditional bottleneck adapters
-- `efficient_conv`: Convolutional adapters for efficient transfer learning
-
 ## Results
 
 Trained models and logs will be saved in the `logs` directory
@@ -146,21 +130,5 @@ Epoch 20 Results:
 Training completed.
 Best Results (Epoch 16) - Acc: 0.61671, F1: 0.64545, AUC: 0.61417
 
-the initial epoch precision recall values might be NaN, hence a warning is to be expected
+The initial epoch precision recall values might be NaN, hence a warning is to be expected
 
-## Training FLOPS
-gpu usage: python - 22990MiB !!! 22GB damn <--- not surprising i think => batches == parallelization (use moge GPU, reduce batch size if out of CUDA memory) /!\ Initial model already do parallelization so can be expensive (but faster)
-
-
-## TODO
-shashwat:
-will implement wandb for train run loggin
-+ advancement in architecture backbones
-
-enzo:
-will implement different multimodal approach
-- Start by creating wav to text
-- make the code architecture more dynamic / light (will try)
-- Create a way to add our own sample from video handmade (web interface to do it ?) --> check how to link web from polytechnics computers to our
-
-both: posters !!!
