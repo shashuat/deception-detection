@@ -70,7 +70,7 @@ pandas==2.2.3
 parso==0.8.4
 peft==0.14.0
 pexpect==4.9.0
-pillow==10.2.0
+pillow==10.3.0
 platformdirs==4.3.6
 pooch==1.8.2
 proglog==0.1.10
