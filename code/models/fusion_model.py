@@ -98,7 +98,7 @@ class Fusion(nn.Module):
             )
         
         elif self.fusion_type == "cross_attention":
-            self.cross_attention = CrossModalAttentionFusion(ENCODER_DIM, 12, num_modalities=len(modalities), num_layers=num_layers, dropout=0.1)
+            self.cross_attention = CrossModalAttentionFusion(ENCODER_DIM, 12, num_modalities=len(modalities), num_layers=num_layers, dropout=0.2)
             self.classifier = MultiTaskClassifier(ENCODER_DIM*len(modalities), num_sub_labels)
 
         self.multi_classifier = {}

@@ -31,7 +31,7 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False  # Can slow down performance
 
-set_seed(1)
+set_seed(42)
 
 ENV = get_env()
 config = {
@@ -50,7 +50,7 @@ config = {
     "warmup_epochs": 1,  # warmup epochs for scheduler
 
     # Model configuration
-    "modalities": ["faces", "whisper"],
+    "modalities": ["faces", "whisper", "audio", "text"],
     "num_layers": 4,
     "adapter": True,
     "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
