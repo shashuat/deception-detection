@@ -6,6 +6,8 @@
 - Download and unzip `data.zip` to avoid to recompute all data processing (~7GB of data)
 
 You can find the data [on this drive](https://drive.google.com/drive/u/0/folders/1XhxA_14jRser0CqYQUU7-VxpCErioTOC)
+You can find the demo video [on this drive](https://drive.google.com/drive/folders/1IvYNl8E4Oe8nSndeDqf7fbqbDdEuhzam)
+
 
 ### Setup python environment
 - Download requirements
