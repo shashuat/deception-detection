@@ -22,12 +22,12 @@ class MultiTaskClassifier(nn.Module):
             nn.Linear(encoder_dim, encoder_dim // 2),
             nn.LayerNorm(encoder_dim // 2),
             nn.ReLU(),
-            nn.Dropout(p=0.25),
+            nn.Dropout(p=0.15),
 
             nn.Linear(encoder_dim // 2, encoder_dim // 4),
             nn.LayerNorm(encoder_dim // 4),
             nn.ReLU(),
-            nn.Dropout(p=0.25),
+            nn.Dropout(p=0.15),
         )
 
         # Main classification head (fusion output)
@@ -96,7 +96,7 @@ class Fusion(nn.Module):
         
         elif self.fusion_type == "cross_attention":
             self.cross_attention = CrossModalAttentionFusion(ENCODER_DIM, 12, num_modalities=len(modalities), num_layers=num_layers, dropout=0.2)
-            self.classifier = MultiTaskClassifier(ENCODER_DIM * len(modalities), num_sub_labels)
+            self.classifier = MultiTaskClassifier(ENCODER_DIM, num_sub_labels)
 
         self.multi_classifier = {}
         if self.multi:

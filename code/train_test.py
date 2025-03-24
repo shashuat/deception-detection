@@ -19,6 +19,8 @@ from models.visual_model import ViT_model
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from setup import get_env
 
+torch.seed()
+
 ENV = get_env()
 config = {
     # Paths
@@ -31,24 +33,24 @@ config = {
     # Training parameters
     "device": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     "lr": 1e-4,
-    "batch_size": 8,
+    "batch_size": 10,
     "num_epochs": 20,
     "warmup_epochs": 1,  # warmup epochs for scheduler
 
     # Model configuration
-    "modalities": ["faces", "audio", "text", "whisper"],
+    "modalities": ["faces", "audio", "whisper", "text"],
     "num_layers": 4,
     "adapter": True,
     "adapter_type": "efficient_conv",  # Options: "nlp", "efficient_conv"
     "fusion_type": "cross_attention",  # Options: "concat", "cross2", "cross_attention"
-    "multi": True,  # Use multitask learning
+    "multi": False,  # Use multitask learning
     "sub_labels": False, # Use sub labels (smile, cry, etc.)
     
     # Protocols for training and testing
     "protocols": [
-        ["train_fold3.csv", "test_fold3.csv"],
+        # ["train_fold3.csv", "test_fold3.csv"],
         # Uncomment to add more protocols
-        # ["train_fold1.csv", "test_fold1.csv"],
+        ["train_fold1.csv", "test_fold1.csv"],
         # ["train_fold2.csv", "test_fold2.csv"],
         # ["long.csv", "short.csv"],
         # ["short.csv", "long.csv"],
@@ -578,12 +580,9 @@ def train_and_evaluate():
                     torch.save(model.state_dict(), local_model_path)
                     print(f"New best model saved to {local_model_path}")
                     
-                    # Save a copy to the main log directory as well (but don't use with wandb.save)
-                    original_model_path = os.path.join(config["log_dir"], f"best_model_{train_file.split('.')[0]}_{test_file.split('.')[0]}.pt")
-                    torch.save(model.state_dict(), original_model_path)
-                    
-                    # Log the model to wandb - using local path
-                    # wandb.save(local_model_path)  # Commented out - will be uncommented when best model is found
+                    # Log the best model to wandb
+                    try: wandb.save(local_model_path) 
+                    except: pass # not sync to wandb ?
             
             # Log final results
             print("\nTraining completed.")

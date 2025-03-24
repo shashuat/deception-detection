@@ -101,7 +101,7 @@ class WhisperTokenEncoder(nn.Module):
             dropout=dropout,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=1)
 
     def forward(self, x: torch.Tensor, return_all_layers=False):
         """
