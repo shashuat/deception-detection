@@ -10,11 +10,11 @@ def plot_logs(log_path, title=None):
     
     # Append activated modalities (if present) to the title.
     modalities = log_data.get("modalities", [])
-    if modalities:
-        title += " (" + ", ".join(modalities) + ")"
+    # if modalities:
+    #     title += " (" + ", ".join(modalities) + ")"
     
     for run_key in log_data["runs"].keys():
-        _plot_on_run(log_data, run_key, title=title + f" on {run_key}")
+        _plot_on_run(log_data, run_key, title=title)
 
 def _plot_on_run(log_data, run_key, title):
     steps = log_data["runs"][run_key]["steps"]

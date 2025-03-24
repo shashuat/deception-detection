@@ -31,8 +31,6 @@ python YT_video_downloader2.py /Data/dec/data/downloaded /Data/dec/DOLOS/dolos_t
 
 We'll store the downloaded files in: `/Data/dec/data/downloaded`. The `--cookies` arg makes the yt_dlp package not think of us as a bot.
 
-I'm not sure if video chopper.py is required because it takes as input long format videos but with yt_video_downloader we already get the 2-5s clips.
-
 2. Extract RGB frames
 
 3. Extract Face Frames
